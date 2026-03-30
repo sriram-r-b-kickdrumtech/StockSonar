@@ -1,0 +1,7 @@
+# StockSonar
+
+- Python 3.11+, FastMCP, Redis, Keycloak for OAuth 2.1 resource server.
+- Tools return structured JSON with `source`, `disclaimer`, `timestamp` (and `data` where applicable).
+- Never expose upstream API keys to MCP clients; keys live in server env only.
+- Enforce scopes per tool via `@mcp.tool(auth=require_scopes(...))`.
+- Prefer async httpx for HTTP; yfinance / jugaad-data may block — run in `asyncio.to_thread` when needed.

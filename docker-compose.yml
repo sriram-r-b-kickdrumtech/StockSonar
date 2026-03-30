@@ -1,0 +1,43 @@
+services:
+  redis:
+    image: redis:7-alpine
+    # No host port: avoids clashing with a local Redis/cluster on :6379. MCP uses redis:6379 inside the network.
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: start-dev --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      # Host port 8090 (avoid clashing with other apps on 8080). Issuer URLs use this port.
+      KC_HOSTNAME: http://localhost:8090
+    ports:
+      - "8090:8080"
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+      - ./keycloak/stocksonar-realm.json:/opt/keycloak/data/import/stocksonar-realm.json:ro
+
+  mcp-server:
+    build: .
+    restart: on-failure
+    # Host .env → container (API keys, rate limits, etc.). Optional so compose works without .env.
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "8000:8000"
+    # Overrides .env for in-network Docker URLs (env wins over env_file).
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      MCP_BASE_URL: http://localhost:8000
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/stocksonar/protocol/openid-connect/certs
+      KEYCLOAK_ISSUER: http://localhost:8090/realms/stocksonar
+      KEYCLOAK_AUTHORIZATION_SERVER: http://localhost:8090/realms/stocksonar
+    depends_on:
+      - redis
+      - keycloak
+
+volumes:
+  keycloak_data:

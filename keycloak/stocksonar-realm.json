@@ -1,0 +1,84 @@
+{
+  "id": "stocksonar",
+  "realm": "stocksonar",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 3600,
+  "roles": {
+    "realm": [
+      { "name": "tier-free", "description": "Free tier" },
+      { "name": "tier-premium", "description": "Premium tier" },
+      { "name": "tier-analyst", "description": "Analyst tier" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "stocksonar-mcp",
+      "name": "StockSonar MCP",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "directAccessGrantsEnabled": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "attributes": {},
+      "protocolMappers": [
+        {
+          "name": "access-token-audience-account",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "account",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "free",
+      "enabled": true,
+      "email": "free@stocksonar.local",
+      "emailVerified": true,
+      "firstName": "Free",
+      "lastName": "User",
+      "requiredActions": [],
+      "credentials": [
+        { "type": "password", "value": "freepass", "temporary": false }
+      ],
+      "realmRoles": ["tier-free"]
+    },
+    {
+      "username": "premium",
+      "enabled": true,
+      "email": "premium@stocksonar.local",
+      "emailVerified": true,
+      "firstName": "Premium",
+      "lastName": "User",
+      "requiredActions": [],
+      "credentials": [
+        { "type": "password", "value": "premiumpass", "temporary": false }
+      ],
+      "realmRoles": ["tier-premium"]
+    },
+    {
+      "username": "analyst",
+      "enabled": true,
+      "email": "analyst@stocksonar.local",
+      "emailVerified": true,
+      "firstName": "Analyst",
+      "lastName": "User",
+      "requiredActions": [],
+      "credentials": [
+        { "type": "password", "value": "analystpass", "temporary": false }
+      ],
+      "realmRoles": ["tier-analyst"]
+    }
+  ]
+}
