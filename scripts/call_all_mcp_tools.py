@@ -15,15 +15,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import json
 import os
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
 import mcp.types as mcp_types
 from fastmcp import Client
+
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+import e2e_common  # noqa: E402
 
 # Sample arguments per tool name (empty dict = no params or defaults only).
 SAMPLE_TOOL_ARGS: dict[str, dict[str, Any]] = {
@@ -36,6 +42,7 @@ SAMPLE_TOOL_ARGS: dict[str, dict[str, Any]] = {
         "limit": 30,
     },
     "get_index_data": {"index_name": "NIFTY 50"},
+    "refresh_market_overview": {},
     "get_top_gainers_losers": {"exchange": "NSE"},
     "search_mutual_funds": {"query": "axis large cap", "limit": 10},
     "get_fund_nav": {"scheme_code": "120503"},
@@ -43,6 +50,9 @@ SAMPLE_TOOL_ARGS: dict[str, dict[str, Any]] = {
     "get_company_news": {"company_name": "Reliance Industries", "max_results": 3, "limit": 5},
     "get_market_news": {"max_results": 3, "limit": 5},
     "analyze_news_sentiment": {"company_name": "Reliance Industries", "max_results": 5},
+    "get_rbi_rates": {},
+    "get_inflation_data": {},
+    "get_news_sentiment": {"company_name": "Reliance Industries", "max_results": 5},
     "get_financial_statements": {"ticker": "RELIANCE.NS", "quarterly": False},
     "get_shareholding_structure": {"ticker": "RELIANCE.NS"},
     "get_corporate_actions": {"ticker": "RELIANCE.NS"},
@@ -82,31 +92,11 @@ _TOOL_ORDER = {n: i for i, n in enumerate(["add_to_portfolio"])}
 
 
 def _decode_jwt_sub(token: str) -> str | None:
-    try:
-        payload_b64 = token.split(".")[1]
-        padded = payload_b64 + "=" * (-len(payload_b64) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
-        sub = payload.get("sub")
-        return str(sub) if sub is not None else None
-    except (IndexError, ValueError, json.JSONDecodeError):
-        return None
+    return e2e_common.decode_jwt_sub(token)
 
 
 def _format_tool_result(result: mcp_types.CallToolResult) -> str:
-    parts: list[str] = []
-    if result.isError:
-        parts.append("isError: true")
-    for block in result.content:
-        if isinstance(block, mcp_types.TextContent):
-            text = block.text
-            try:
-                parsed = json.loads(text)
-                parts.append(json.dumps(parsed, indent=2, default=str)[:8000])
-            except json.JSONDecodeError:
-                parts.append(text[:8000] + ("…" if len(text) > 8000 else ""))
-        else:
-            parts.append(repr(block))
-    return "\n".join(parts) if parts else "(empty content)"
+    return e2e_common.format_tool_result(result, max_chars=8000)
 
 
 def _fetch_token(args: argparse.Namespace) -> str:
@@ -174,13 +164,17 @@ async def _run(args: argparse.Namespace) -> int:
             print(_format_tool_result(result))
             print()
 
-        if args.resources and sub:
-            uris = [
-                f"portfolio://{sub}/holdings",
-                f"portfolio://{sub}/alerts",
-                f"portfolio://{sub}/risk_score",
-                f"watchlist://{sub}/tickers",
-            ]
+        if args.resources:
+            uris = ["market://overview", "macro://snapshot"]
+            if sub:
+                uris.extend(
+                    [
+                        f"portfolio://{sub}/holdings",
+                        f"portfolio://{sub}/alerts",
+                        f"portfolio://{sub}/risk_score",
+                        f"watchlist://{sub}/tickers",
+                    ]
+                )
             for uri in uris:
                 print(f"=== resource: {uri} ===")
                 try:
@@ -199,8 +193,11 @@ async def _run(args: argparse.Namespace) -> int:
                     else:
                         print(repr(block))
                 print()
-        elif args.resources and not sub:
-            print("=== resources skipped (could not parse sub from JWT) ===", file=sys.stderr)
+            if not sub:
+                print(
+                    "=== note: portfolio/watchlist URIs skipped (could not parse sub from JWT) ===",
+                    file=sys.stderr,
+                )
 
     return 0
 
@@ -236,8 +233,32 @@ def main() -> int:
         action="store_true",
         help="Do not read portfolio://… resources after tools.",
     )
+    p.add_argument(
+        "--log-file",
+        default="",
+        help="Mirror stdout/stderr to this file (default: logs/stocksonar_all_tools_<timestamp>.log if set via --save-log)",
+    )
+    p.add_argument(
+        "--save-log",
+        action="store_true",
+        help="Write to logs/stocksonar_all_tools_<UTC timestamp>.log automatically",
+    )
     args = p.parse_args()
     args.resources = not args.no_resources
+
+    repo = Path(__file__).resolve().parent.parent
+    log_path: Path | None = None
+    if args.log_file:
+        log_path = Path(args.log_file).resolve()
+    elif args.save_log:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        log_path = (repo / "logs" / f"stocksonar_all_tools_{ts}.log").resolve()
+
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Logging to: {log_path}", file=sys.stderr)
+        with e2e_common.tee_stdout_stderr(log_path):
+            return asyncio.run(_run(args))
     return asyncio.run(_run(args))
 
 

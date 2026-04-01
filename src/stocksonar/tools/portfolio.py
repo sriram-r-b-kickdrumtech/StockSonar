@@ -12,6 +12,7 @@ from fastmcp.server.dependencies import get_access_token
 from stocksonar.middleware.tool_guard import enforce_tool_policies, finish_audit_ok
 from stocksonar.services.portfolio import PortfolioStore, sector_for
 from stocksonar.upstream import yfinance_client
+from stocksonar.services.portfolio_alerts import HEALTH_SOURCE
 from stocksonar.util.notifications import notify_portfolio_resources_updated
 from stocksonar.util.response import ok_response
 
@@ -32,6 +33,23 @@ def _rl(ctx: Context):
     return ctx.lifespan_context.get("rate_limiter")
 
 
+async def _resolve_sector(sym: str) -> str:
+    """Hardcoded map first, then Yahoo Finance info, then 'Other'."""
+    known = sector_for(sym)
+    if known != "Other":
+        return known
+    try:
+        import yfinance as yf
+        ticker_sym = f"{sym}.NS"
+        info = await asyncio.to_thread(lambda: yf.Ticker(ticker_sym).info)
+        yf_sector = (info or {}).get("sector") or ""
+        if yf_sector:
+            return str(yf_sector)
+    except Exception:
+        pass
+    return "Other"
+
+
 async def add_to_portfolio(
     ctx: Context,
     symbol: str,
@@ -40,29 +58,58 @@ async def add_to_portfolio(
 ) -> dict[str, Any]:
     """Add or update a holding (quantity and average buy price)."""
     await enforce_tool_policies(rate_limiter=_rl(ctx), tool_name="add_to_portfolio")
+    qty = float(quantity)
+    price = float(avg_buy_price)
+    if qty <= 0:
+        return ok_response(
+            {"error": True, "message": "quantity must be greater than 0"},
+            "StockSonar",
+        )
+    if price <= 0:
+        return ok_response(
+            {"error": True, "message": "avg_buy_price must be greater than 0"},
+            "StockSonar",
+        )
     uid = _user_id()
     store = _store(ctx)
-    holdings = await store.load(uid)
     sym = symbol.upper().replace(".NS", "").replace(".BO", "")
+
+    # Validate: check if Yahoo Finance knows this symbol
+    is_valid = await asyncio.to_thread(yfinance_client.is_valid_ticker, sym)
+    if not is_valid:
+        finish_audit_ok("add_to_portfolio")
+        return ok_response(
+            {
+                "error": True,
+                "message": f"Symbol '{sym}' not found on NSE/BSE (Yahoo Finance returned no price for {sym}.NS). "
+                "Use valid NSE symbols like RELIANCE, TCS, INFY, HDFCBANK, SBIN, ITC, etc.",
+            },
+            "StockSonar",
+        )
+
+    holdings = await store.load(uid)
     found = False
     for h in holdings:
         if h.get("symbol") == sym:
-            h["quantity"] = float(quantity)
-            h["avg_buy_price"] = float(avg_buy_price)
+            h["quantity"] = qty
+            h["avg_buy_price"] = price
+            if h.get("sector") in ("Other", None):
+                h["sector"] = await _resolve_sector(sym)
             found = True
             break
     if not found:
+        sector = await _resolve_sector(sym)
         holdings.append(
             {
                 "symbol": sym,
-                "quantity": float(quantity),
-                "avg_buy_price": float(avg_buy_price),
-                "sector": sector_for(sym),
+                "quantity": qty,
+                "avg_buy_price": price,
+                "sector": sector,
             }
         )
     await store.save(uid, holdings)
     await notify_portfolio_resources_updated(ctx, uid)
-    out = ok_response({"holdings": holdings}, "StockSonar portfolio store")
+    out = ok_response({"holdings": holdings}, "StockSonar portfolio store + Yahoo Finance (sector)")
     finish_audit_ok("add_to_portfolio")
     return out
 
@@ -94,7 +141,10 @@ async def get_portfolio_summary(ctx: Context) -> dict[str, Any]:
         sym = h["symbol"]
         qty = float(h["quantity"])
         avg = float(h["avg_buy_price"])
-        q = await asyncio.to_thread(yfinance_client.get_quote, sym)
+        try:
+            q = await asyncio.to_thread(yfinance_client.get_quote, sym)
+        except Exception:
+            q = {}
         ltp = q.get("ltp") or avg
         try:
             ltp_f = float(ltp)
@@ -160,6 +210,7 @@ async def portfolio_health_check(ctx: Context) -> dict[str, Any]:
                     "symbol": h["symbol"],
                     "allocation_pct": ap,
                     "message": f"{h['symbol']} is {ap:.1f}% of portfolio (>20% threshold)",
+                    "source": HEALTH_SOURCE,
                 }
             )
     for sec, pct in sector_map.items():
@@ -170,6 +221,7 @@ async def portfolio_health_check(ctx: Context) -> dict[str, Any]:
                     "sector": sec,
                     "allocation_pct": pct,
                     "message": f"{sec} sector is {pct:.1f}% (>40% threshold)",
+                    "source": HEALTH_SOURCE,
                 }
             )
     top = sorted(hlist, key=lambda x: x.get("allocation_pct") or 0, reverse=True)[:5]

@@ -27,6 +27,19 @@ async def notify_portfolio_resources_updated(ctx: Context, user_id: str) -> None
         logger.debug("portfolio resource notify skipped", exc_info=True)
 
 
+async def notify_market_overview_updated(ctx: Context) -> None:
+    """Fire resources/updated for market://overview (subscription demo)."""
+    try:
+        uri = "market://overview"
+        await ctx.send_notification(
+            ResourceUpdatedNotification(
+                params=ResourceUpdatedNotificationParams(uri=AnyUrl(uri))
+            )
+        )
+    except Exception:
+        logger.debug("market overview notify skipped", exc_info=True)
+
+
 async def notify_watchlist_resource_updated(ctx: Context, user_id: str) -> None:
     try:
         uri = f"watchlist://{user_id}/tickers"

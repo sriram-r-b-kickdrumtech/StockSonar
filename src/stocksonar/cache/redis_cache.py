@@ -42,3 +42,6 @@ class RedisCache:
             self._key(data_type, identifier),
             json.dumps(value, default=str),
         )
+
+    async def delete(self, data_type: str, identifier: str) -> None:
+        await self._r.delete(self._key(data_type, identifier))

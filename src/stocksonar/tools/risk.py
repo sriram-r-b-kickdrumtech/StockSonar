@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastmcp import Context
@@ -9,9 +10,47 @@ from fastmcp.server.auth import require_scopes
 
 from stocksonar.middleware.tool_guard import enforce_tool_policies, finish_audit_ok
 from stocksonar.services.portfolio import PortfolioStore, sector_for
+from stocksonar.services.portfolio_alerts import (
+    _normalize_from_concentration,
+    _normalize_macro_sensitivity,
+    _normalize_mf_overlap,
+    _normalize_sentiment_shift,
+    merge_risk_alerts,
+)
 from stocksonar.tools.portfolio import _rl, _user_id
 from stocksonar.upstream import mfapi, macro as macro_api, news as news_api
+from stocksonar.util.notifications import notify_portfolio_resources_updated
 from stocksonar.util.response import ok_response
+
+
+def _iso_z(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _macro_adverse_assessment(macro: dict[str, Any]) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    if macro.get("degraded"):
+        reasons.append("Macro snapshot marked degraded")
+    fe = macro.get("fetch_error")
+    if fe:
+        reasons.append(f"RBI fetch error: {fe}")
+    repo = macro.get("repo_rate_percent")
+    if repo is not None and float(repo) >= 7.0:
+        reasons.append(f"Policy repo at {repo}% (illustrative tight-policy threshold)")
+    return bool(reasons), reasons
+
+
+def _window_stats(articles: list[dict[str, Any]]) -> dict[str, Any]:
+    scores: list[int] = []
+    for a in articles:
+        sc = int(news_api.score_title_sentiment(a.get("title") or "")["score"])
+        scores.append(sc)
+    n = len(scores)
+    return {
+        "article_count": n,
+        "aggregate_lexicon_score": sum(scores),
+        "avg_lexicon_score": round(sum(scores) / n, 4) if n else 0.0,
+    }
 
 
 async def check_concentration_risk(ctx: Context) -> dict[str, Any]:
@@ -43,6 +82,10 @@ async def check_concentration_risk(ctx: Context) -> dict[str, Any]:
     for sec, pct in sector_map.items():
         if pct > 40:
             flags.append({"kind": "sector", "sector": sec, "allocation_pct": pct})
+    if flags:
+        merged_alerts = [_normalize_from_concentration(f) for f in flags]
+        await merge_risk_alerts(store, uid, merged_alerts)
+        await notify_portfolio_resources_updated(ctx, uid)
     out = ok_response({"flags": flags}, "StockSonar + Yahoo Finance")
     finish_audit_ok("check_concentration_risk")
     return out
@@ -69,10 +112,16 @@ async def check_mf_overlap(ctx: Context) -> dict[str, Any]:
                         "matched_symbols": hits,
                     }
                 )
+    overlap_score = len(overlapping_schemes)
+    if overlap_score >= 5 and holdings:
+        await merge_risk_alerts(
+            store, uid, [_normalize_mf_overlap(overlap_score)]
+        )
+        await notify_portfolio_resources_updated(ctx, uid)
     out = ok_response(
         {
             "overlapping_schemes": overlapping_schemes[:25],
-            "overlap_score": len(overlapping_schemes),
+            "overlap_score": overlap_score,
             "note": "Heuristic match: scheme name contains equity symbol (MFapi.in search).",
         },
         "MFapi.in + StockSonar",
@@ -87,6 +136,7 @@ async def check_macro_sensitivity(ctx: Context) -> dict[str, Any]:
     uid = _user_id()
     store: PortfolioStore = ctx.lifespan_context["portfolio"]
     macro = macro_api.get_macro_snapshot()
+    adverse, macro_reasons = _macro_adverse_assessment(macro)
     sensitive = []
     for h in await store.load(uid):
         sym = h["symbol"]
@@ -108,8 +158,18 @@ async def check_macro_sensitivity(ctx: Context) -> dict[str, Any]:
                 }
             )
     macro_src = macro.get("source") or "macro snapshot"
+    if adverse and await store.load(uid):
+        await merge_risk_alerts(
+            store, uid, [_normalize_macro_sensitivity(adverse, macro_reasons)]
+        )
+        await notify_portfolio_resources_updated(ctx, uid)
     out = ok_response(
-        {"macro": macro, "sensitive_holdings": sensitive},
+        {
+            "macro": macro,
+            "adverse_macro": adverse,
+            "macro_reasons": macro_reasons,
+            "sensitive_holdings": sensitive,
+        },
         f"StockSonar rules + {macro_src}",
     )
     finish_audit_ok("check_macro_sensitivity")
@@ -117,31 +177,72 @@ async def check_macro_sensitivity(ctx: Context) -> dict[str, Any]:
 
 
 async def detect_sentiment_shift(ctx: Context) -> dict[str, Any]:
-    """Compare recent news volume/tone proxy vs prior window (lightweight heuristic)."""
+    """Compare 7-day vs prior-window news using GNews date filters + lexicon scores."""
     await enforce_tool_policies(rate_limiter=_rl(ctx), tool_name="detect_sentiment_shift")
     uid = _user_id()
     store: PortfolioStore = ctx.lifespan_context["portfolio"]
-    flags = []
+    now = datetime.now(timezone.utc)
+    from_7 = _iso_z(now - timedelta(days=7))
+    to_now = _iso_z(now)
+    from_30 = _iso_z(now - timedelta(days=30))
+    to_prior_end = _iso_z(now - timedelta(days=7))
+    shifts: list[dict[str, Any]] = []
+    merge_items: list[dict[str, Any]] = []
     for h in await store.load(uid):
         sym = h["symbol"]
         try:
-            recent, _ = await news_api.company_news(sym, max_results=5)
-            older, _ = await news_api.company_news(f"{sym} stock", max_results=5)
-        except ValueError as e:
-            flags.append({"symbol": sym, "error": str(e)})
-            continue
-        score_recent = len(recent)
-        score_older = len(older)
-        if score_recent >= score_older + 2:
-            flags.append(
-                {
-                    "symbol": sym,
-                    "direction": "elevated_activity",
-                    "magnitude": score_recent - score_older,
-                    "note": "Article count proxy only — not NLP sentiment.",
-                }
+            art7, _ = await news_api.company_news(
+                sym, max_results=20, from_iso=from_7, to_iso=to_now
             )
-    out = ok_response({"shifts": flags}, "GNews article-count heuristic")
+            art_prev, _ = await news_api.company_news(
+                sym, max_results=20, from_iso=from_30, to_iso=to_prior_end
+            )
+        except ValueError as e:
+            shifts.append({"symbol": sym, "error": str(e)})
+            continue
+        w7 = _window_stats(art7)
+        w30 = _window_stats(art_prev)
+        avg_diff = w7["avg_lexicon_score"] - w30["avg_lexicon_score"]
+        count_spike = w7["article_count"] >= w30["article_count"] + 3
+        tone_neg = avg_diff <= -0.4
+        tone_pos = avg_diff >= 0.4
+        if tone_neg:
+            direction = "negative_tone"
+        elif tone_pos:
+            direction = "positive_tone"
+        elif count_spike:
+            direction = "elevated_activity"
+        else:
+            direction = "stable"
+        shift_detected = tone_neg or tone_pos or count_spike
+        row: dict[str, Any] = {
+            "symbol": sym,
+            "direction": direction,
+            "shift_detected": shift_detected,
+            "avg_lexicon_diff_7d_vs_prior": round(avg_diff, 4),
+            "window_7d": w7,
+            "window_30d": w30,
+            "note": "window_30d = days 8–30 before now vs last 7d; lexicon only — not NLP.",
+        }
+        if shift_detected:
+            row["magnitude"] = round(abs(avg_diff), 4)
+            merge_items.append(
+                _normalize_sentiment_shift(
+                    {
+                        "symbol": sym,
+                        "direction": direction,
+                        "magnitude": row["magnitude"],
+                        "window_7d": w7,
+                        "window_30d": w30,
+                        "note": row["note"],
+                    }
+                )
+            )
+        shifts.append(row)
+    if merge_items:
+        await merge_risk_alerts(store, uid, merge_items)
+        await notify_portfolio_resources_updated(ctx, uid)
+    out = ok_response({"shifts": shifts}, "GNews + StockSonar lexicon (dated windows)")
     finish_audit_ok("detect_sentiment_shift")
     return out
 

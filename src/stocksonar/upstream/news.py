@@ -15,8 +15,14 @@ async def company_news(
     max_results: int = 10,
     country: str = "in",
     page: int = 1,
+    from_iso: str | None = None,
+    to_iso: str | None = None,
 ) -> tuple[list[dict[str, Any]], int | None]:
-    """Returns (articles, total_available_from_api_or_none)."""
+    """Returns (articles, total_available_from_api_or_none).
+
+    When ``from_iso`` / ``to_iso`` are set, GNews ``from`` / ``to`` filters apply (ISO 8601).
+    Articles are still filtered client-side by ``published_at`` when both bounds are set.
+    """
     s = get_settings()
     if not s.gnews_api_key:
         raise ValueError(
@@ -30,6 +36,10 @@ async def company_news(
         "max": max_results,
         "page": max(1, page),
     }
+    if from_iso:
+        params["from"] = from_iso
+    if to_iso:
+        params["to"] = to_iso
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.get("https://gnews.io/api/v4/search", params=params)
         r.raise_for_status()

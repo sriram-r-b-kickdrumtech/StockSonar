@@ -1,5 +1,6 @@
 # StockSonar
 
+- **Environment**: For any terminal work (`python`, `pip`, `pytest`, starting the server), use this repo’s **`.venv`** built on top of the **uv conda** environment (same interpreter chain). Activate `.venv` first, or call `.venv/bin/python` / `.venv/bin/pytest` (macOS/Linux) or `.venv\Scripts\...` (Windows) directly.
 - Python 3.11+, FastMCP, Redis, Keycloak for OAuth 2.1 resource server.
 - Tools return structured JSON with `source`, `disclaimer`, `timestamp` (and `data` where applicable).
 - Never expose upstream API keys to MCP clients; keys live in server env only.

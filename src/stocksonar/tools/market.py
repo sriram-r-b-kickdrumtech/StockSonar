@@ -10,6 +10,11 @@ from fastmcp.server.auth import require_scopes
 
 from stocksonar.middleware.tool_guard import enforce_tool_policies, finish_audit_ok
 from stocksonar.upstream import nse, yfinance_client
+from stocksonar.services.market_overview import (
+    build_market_overview_payload,
+    invalidate_market_overview_cache,
+)
+from stocksonar.util.notifications import notify_market_overview_updated
 from stocksonar.util.pagination import paginate_slice, pagination_meta
 from stocksonar.util.response import ok_response
 
@@ -37,7 +42,10 @@ async def get_stock_quote(ctx: Context, ticker: str) -> dict[str, Any]:
             finish_audit_ok("get_stock_quote")
             return hit
 
-    yq = await asyncio.to_thread(yfinance_client.get_quote, ticker)
+    try:
+        yq = await asyncio.to_thread(yfinance_client.get_quote, ticker)
+    except Exception:
+        yq = {}
     try:
         sym = yfinance_client.symbol_for_ticker(ticker)
         nse_q = await asyncio.to_thread(
@@ -126,6 +134,17 @@ async def get_index_data(ctx: Context, index_name: str = "NIFTY 50") -> dict[str
     return out
 
 
+async def refresh_market_overview(ctx: Context) -> dict[str, Any]:
+    """Invalidate cache, rebuild NSE overview, notify subscribers of market://overview (PS2)."""
+    await enforce_tool_policies(rate_limiter=_rl(ctx), tool_name="refresh_market_overview")
+    await invalidate_market_overview_cache(ctx)
+    payload = await build_market_overview_payload(ctx)
+    await notify_market_overview_updated(ctx)
+    out = ok_response(payload["data"], payload["source"])
+    finish_audit_ok("refresh_market_overview")
+    return out
+
+
 async def get_top_gainers_losers(ctx: Context, exchange: str = "NSE") -> dict[str, Any]:
     """Top movers from NSE snapshot (pre-open style listing)."""
     await enforce_tool_policies(rate_limiter=_rl(ctx), tool_name="get_top_gainers_losers")
@@ -140,4 +159,5 @@ def register_market_tools(mcp) -> None:
     mcp.tool(auth=require_scopes("market:read"))(get_stock_quote)
     mcp.tool(auth=require_scopes("market:read"))(get_price_history)
     mcp.tool(auth=require_scopes("market:read"))(get_index_data)
+    mcp.tool(auth=require_scopes("portfolio:risk"))(refresh_market_overview)
     mcp.tool(auth=require_scopes("market:read"))(get_top_gainers_losers)

@@ -1,98 +1,231 @@
 # StockSonar
 
-Production-style **MCP server** for Indian market data, mutual funds, news, and **PS2: Portfolio Risk & Alert Monitor** tools — with **OAuth 2.1 resource-server** metadata (Keycloak), **Redis** caching & rate limits, and **tiered scopes** mapped from Keycloak realm roles.
+Indian markets **MCP server** (FastMCP): quotes, mutual funds, news, macro, filings, watchlist, and **PS2 portfolio risk** tools with Keycloak OAuth 2.1, Redis, and structured JSON responses (`source`, `disclaimer`, `timestamp`, `data`).
 
-## Quick start (local)
+---
+
+## Prerequisites
+
+| Requirement | Notes |
+|-------------|--------|
+| **Docker** | For Redis + Keycloak + MCP container |
+| **Python 3.11+** | Matches `.cursorrules`; Docker image uses 3.12 |
+| **`.env`** | Copy from [`.env.example`](.env.example); set at least `GNEWS_API_KEY` for news/sentiment tools |
+| **Virtualenv** | Use repo **`.venv`** (see [`.cursorrules`](.cursorrules)) |
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+cd StockSonar
+python3.11 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env
-# Add GNEWS_API_KEY from https://gnews.io/
 ```
 
-### Run MCP (Streamable HTTP)
+---
+
+## One-command stack (production-like)
+
+From the repo root:
 
 ```bash
+docker compose up -d --build
+```
+
+| Service | URL / port |
+|---------|------------|
+| **MCP (HTTP + `/mcp`)** | http://localhost:8000 |
+| **MCP health** | http://localhost:8000/health |
+| **Keycloak** | http://localhost:8090 (admin / admin) |
+| **Redis** | Internal only (`redis:6379` in Compose); host apps use `REDIS_URL` in `.env` if you run MCP on the host |
+
+The MCP container reads `.env` if present (optional). After **first** start, wait ~30–60s for Keycloak to import the realm.
+
+### Fresh Keycloak volume (401 / missing `aud`)
+
+If tokens fail JWT validation, reset volumes and re-import:
+
+```bash
+docker compose down -v
+docker compose up -d --build
+```
+
+---
+
+## Run MCP on your host (optional)
+
+Useful for debugging without rebuilding the image:
+
+```bash
+export REDIS_URL=redis://localhost:6379/0   # only if you publish Redis; Compose default does not
 export PYTHONPATH=src
 python -m stocksonar.server
 ```
 
-- MCP endpoint: `http://localhost:8000/mcp` (see `STREAMABLE_HTTP_PATH`). By default **`MCP_JSON_RESPONSE=true`**: Streamable HTTP returns JSON per request so tier **rate limits** can surface as **HTTP 429** with **`Retry-After`** (see `stocksonar.middleware.http_rate_limit`). Clients must send **`Accept: application/json`** for MCP POSTs in that mode.
-- Health: `http://localhost:8000/health`
-- Protected resource metadata: `/.well-known/oauth-protected-resource` (via FastMCP / Keycloak integration)
+With default Compose, Redis is **not** exposed on `localhost:6379`; prefer the **mcp-server** container for a turnkey demo.
 
-### Docker Compose (Keycloak + Redis + MCP)
+---
 
-```bash
-export GNEWS_API_KEY=your_key
-docker compose up --build
-```
+## Test users (Keycloak)
 
-Wait for Keycloak at **http://localhost:8090** (admin / admin). Port **8090** is used so **8080 stays free** for other apps. Realm `stocksonar` is imported with users:
+Defined in [`keycloak/stocksonar-realm.json`](keycloak/stocksonar-realm.json):
 
-| User    | Password     | Realm role     |
-|---------|--------------|----------------|
-| `free`  | `freepass`   | `tier-free`    |
-| `premium` | `premiumpass` | `tier-premium` |
-| `analyst` | `analystpass` | `tier-analyst` |
+| Username | Password | Tier |
+|----------|----------|------|
+| `free` | `freepass` | Free scopes |
+| `premium` | `premiumpass` | + Premium (e.g. `portfolio:risk`, `macro:read`) |
+| `analyst` | `analystpass` | + Analyst (`research:generate`, filings, cross-source) |
 
-Client: `stocksonar-mcp` (public, direct access grants for demos).
+Client: **`stocksonar-mcp`** (public client, direct access grant enabled for password grant demos).
 
-Keycloak stores state in the **`keycloak_data`** volume. Demo users include email and names so the password grant works on Keycloak 24+. If you still see **`Account is not fully set up`**, wipe and re-import: `docker compose down -v && docker compose up -d keycloak`.
+---
 
-### Get an access token (password grant — demo only)
+## Automated E2E & judge demo (Python + log files)
 
-```bash
-curl -s -X POST 'http://localhost:8090/realms/stocksonar/protocol/openid-connect/token' \
-  -d 'client_id=stocksonar-mcp' \
-  -d 'username=analyst' \
-  -d 'password=analystpass' \
-  -d 'grant_type=password' | jq -r .access_token
-```
+All commands assume **`.venv` activated** and repo root as cwd.
 
-Use the token as `Authorization: Bearer …` on MCP HTTP requests.
+### 1) Stack health (blocking probes)
 
-### Static auth (no Keycloak)
-
-In `.env`:
-
-```env
-AUTH_MODE=static
-STATIC_TOKENS_JSON={"demo":{"client_id":"c","scopes":["market:read","mf:read","news:read","portfolio:read","portfolio:write","portfolio:risk","research:generate"],"sub":"demo-user"}}
-```
-
-Then call MCP with `Authorization: Bearer demo`.
-
-## Tiers & scopes
-
-Realm roles `tier-free`, `tier-premium`, `tier-analyst` expand to OAuth scopes (see `src/stocksonar/auth/scopes.py`).
-
-- **Free**: `market:read`, `mf:read`, `news:read`, `portfolio:read`, `portfolio:write`
-- **Premium**: + `fundamentals:read`, `technicals:read`, `macro:read`, `portfolio:risk`
-- **Analyst**: + `filings:*`, `macro:historical`, `research:generate`
-
-## Tests
+Retries Keycloak OIDC discovery + MCP `/health`:
 
 ```bash
-export PYTHONPATH=src
-pytest tests/ -q
+python scripts/check_stack_health.py
+python scripts/check_stack_health.py --retries 10 --pause 3
 ```
 
-- `tests/base/` — base layer
-- `tests/ps2/` — portfolio / risk / cross-source
+Exit code **0** = ready for demos. Logs every attempt to stdout.
 
-## API keys
+### 2) **Judge demo** (recommended for PS2 + auth story)
 
-| Variable | Register at |
-|----------|-------------|
-| `GNEWS_API_KEY` | https://gnews.io/ |
-| `FINNHUB_API_KEY` | https://finnhub.io/ (optional) |
-| `ALPHA_VANTAGE_API_KEY` | https://www.alphavantage.co/ (optional) |
+Runs:
 
-No keys required for Yahoo Finance (yfinance), jugaad-data / NSE, or MFapi.in.
+- Quick stack check  
+- **Tier probes**: `free` / `premium` / `analyst` calling tools that should **allow** or **deny** per scopes  
+- **Analyst PS2 flow**: skewed portfolio → health → risk tools → `portfolio_risk_report` → `what_if_analysis` → `refresh_market_overview` → reads `market://`, `macro://`, `portfolio://…` resources → lists PS2 prompts  
 
-## Disclaimer
+**By default** output is mirrored to **console and** a timestamped file under `logs/`:
 
-All outputs include a non-advice disclaimer. Data is aggregated from third-party sources; verify before use.
+```bash
+python scripts/run_judge_demo.py
+```
+
+Custom log path:
+
+```bash
+python scripts/run_judge_demo.py --log-file logs/judge_run_1.log
+```
+
+Console only (no file):
+
+```bash
+python scripts/run_judge_demo.py --no-log-file
+```
+
+### Interactive PS2 (manual, full visibility)
+
+Menu-driven shell: call each PS2 tool and resource yourself, see **full pretty-printed JSON** and **latency (ms)** per call. Supports **in-session user switch** (free / premium / analyst) with a fresh MCP connection.
+
+```bash
+python scripts/ps2_interactive.py
+python scripts/ps2_interactive.py --username premium
+python scripts/ps2_interactive.py --log-file logs/ps2_session.log
+```
+
+Uses the same env vars as other scripts (`MCP_BASE_URL`, `TOKEN_URL`, `KEYCLOAK_*`). For `free`, `premium`, or `analyst` usernames, passwords default to the realm (`freepass`, `premiumpass`, `analystpass`).
+
+Resource subscriptions / push notifications are not shown in this shell; use the automated judge demo or an MCP client that subscribes to resources.
+
+Skip tier section (faster, only analyst story):
+
+```bash
+python scripts/run_judge_demo.py --skip-tiers
+```
+
+Environment (optional):
+
+| Variable | Purpose |
+|----------|---------|
+| `MCP_BASE_URL` | Default `http://localhost:8000` |
+| `STREAMABLE_HTTP_PATH` | Default `/mcp` |
+| `TOKEN_URL` | Keycloak token endpoint |
+| `KEYCLOAK_CLIENT_ID` | Default `stocksonar-mcp` |
+| `KEYCLOAK_USER` / `KEYCLOAK_PASSWORD` | Used for **analyst** PS2 section (override per run if needed) |
+| `STOCKSONAR_KEYCLOAK_BASE` | For stack check inside the script |
+
+### 3) Call **every** MCP tool + read resources (full sweep)
+
+Uses password grant (default **analyst**). Optional automatic log file:
+
+```bash
+export KEYCLOAK_USER=analyst
+export KEYCLOAK_PASSWORD=analystpass
+python scripts/call_all_mcp_tools.py
+```
+
+Save full transcript:
+
+```bash
+python scripts/call_all_mcp_tools.py --save-log
+# or
+python scripts/call_all_mcp_tools.py --log-file logs/full_tool_sweep.log
+```
+
+### 4) Integration tests (PKCE + MCP prompts) with log file
+
+Requires the same Docker stack:
+
+```bash
+python scripts/run_integration_tests.py --save-log
+```
+
+Forward extra pytest args after `--`:
+
+```bash
+python scripts/run_integration_tests.py --save-log -- -v -k pkce
+```
+
+Or plain pytest:
+
+```bash
+PYTHONPATH=src pytest tests/integration -v -m integration
+```
+
+### 5) Unit tests (no Docker)
+
+```bash
+PYTHONPATH=src pytest tests -m "not integration" -q
+```
+
+---
+
+## Log files
+
+- Default judge logs: `logs/stocksonar_judge_demo_<UTC_timestamp>.log`  
+- Full tool sweep: `logs/stocksonar_all_tools_<UTC_timestamp>.log` (with `--save-log`)  
+- Integration: `logs/pytest_integration_<UTC_timestamp>.log` (with `--save-log`)  
+
+`logs/*.log` is **gitignored**; the folder is kept via [`logs/.gitkeep`](logs/.gitkeep).
+
+---
+
+## Architecture (short)
+
+- **Auth**: Keycloak JWTs; scopes from realm roles ([`src/stocksonar/auth/scopes.py`](src/stocksonar/auth/scopes.py)).  
+- **Rate limits**: Redis sliding window + optional HTTP 429 for JSON MCP responses.  
+- **PS2**: Portfolio store in Redis, risk tools, `portfolio://…` + `market://overview` + `macro://snapshot` resources, resource update notifications on portfolio changes and `refresh_market_overview`.  
+- **Problem statements**: See [`docs/problem_statement.md`](docs/problem_statement.md).
+
+---
+
+## Troubleshooting
+
+| Symptom | What to try |
+|---------|-------------|
+| MCP 401 / invalid token | `docker compose down -v` and bring stack up again; confirm `KEYCLOAK_AUDIENCE=account` in `.env` |
+| News / sentiment errors | Set `GNEWS_API_KEY` in `.env`; watch `GNEWS_DAILY_QUOTA` |
+| `check_stack_health` fails | Wait longer; increase `--retries` / `--pause`; confirm ports 8000 and 8090 |
+| Import errors running scripts | Run from repo root; use `.venv/bin/python` |
+
+---
+
+## License / disclaimer
+
+Outputs include a configurable **disclaimer** ([`src/stocksonar/config.py`](src/stocksonar/config.py)); not financial advice.

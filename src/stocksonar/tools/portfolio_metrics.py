@@ -22,7 +22,10 @@ async def valued_holdings(ctx: Context) -> tuple[list[dict[str, Any]], float]:
         sym = h["symbol"]
         qty = float(h["quantity"])
         avg = float(h["avg_buy_price"])
-        q = await asyncio.to_thread(yfinance_client.get_quote, sym)
+        try:
+            q = await asyncio.to_thread(yfinance_client.get_quote, sym)
+        except Exception:
+            q = {}
         ltp = q.get("ltp") or avg
         try:
             ltp_f = float(ltp)

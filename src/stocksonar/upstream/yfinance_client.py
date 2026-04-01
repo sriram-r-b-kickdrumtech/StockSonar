@@ -10,6 +10,8 @@ import yfinance as yf
 
 def symbol_for_ticker(ticker: str) -> str:
     t = ticker.strip().upper()
+    if t.startswith("^"):
+        return t
     if t.endswith(".NS") or t.endswith(".BO"):
         return t
     return f"{t}.NS"
@@ -18,8 +20,14 @@ def symbol_for_ticker(ticker: str) -> str:
 def get_quote(ticker: str) -> dict[str, Any]:
     sym = symbol_for_ticker(ticker)
     t = yf.Ticker(sym)
-    info = dict(t.fast_info or {})
-    full = t.info or {}
+    try:
+        info = dict(t.fast_info or {})
+    except (KeyError, Exception):
+        info = {}
+    try:
+        full = t.info or {}
+    except Exception:
+        full = {}
     ltp = info.get("lastPrice") or full.get("currentPrice") or full.get("regularMarketPrice")
     prev = info.get("previousClose") or full.get("previousClose")
     change_pct = None
@@ -37,7 +45,17 @@ def get_quote(ticker: str) -> dict[str, Any]:
         "pe_ratio": full.get("trailingPE"),
         "week_52_high": info.get("fiftyTwoWeekHigh") or full.get("fiftyTwoWeekHigh"),
         "week_52_low": info.get("fiftyTwoWeekLow") or full.get("fiftyTwoWeekLow"),
+        "valid": ltp is not None,
     }
+
+
+def is_valid_ticker(ticker: str) -> bool:
+    """Quick check: does Yahoo Finance return a last price for this symbol?"""
+    try:
+        q = get_quote(ticker)
+        return bool(q.get("ltp"))
+    except Exception:
+        return False
 
 
 def get_price_history(
