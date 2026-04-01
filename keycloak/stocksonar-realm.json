@@ -3,7 +3,7 @@
   "realm": "stocksonar",
   "enabled": true,
   "sslRequired": "none",
-  "accessTokenLifespan": 3600,
+  "accessTokenLifespan": 28800,
   "roles": {
     "realm": [
       { "name": "tier-free", "description": "Free tier" },

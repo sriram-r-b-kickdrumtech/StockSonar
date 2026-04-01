@@ -206,7 +206,7 @@ PYTHONPATH=src pytest tests -m "not integration" -q
 
 ---
 
-## Using StockSonar with LLMs (Claude Code / Cursor / Claude Desktop)
+## Using StockSonar with LLMs (Gemini CLI / Cursor / Claude Code)
 
 StockSonar is a standard MCP server — any MCP-compatible LLM client can connect and use all tools, resources, and prompts.
 
@@ -228,17 +228,66 @@ This reads `.env.llm` which sets `AUTH_MODE=static` and defines three tokens:
 | `premium-token` | Premium | Risk tools only |
 | `free-token` | Free | Basic portfolio + market |
 
-### Claude Code
+### Gemini CLI (free, recommended)
 
-The repo includes `.mcp.json` at the root. Claude Code discovers it automatically.
+The repo includes `.gemini/settings.json` pre-configured for StockSonar.
 
-**Option A — OAuth flow (Keycloak running)**
+**1. Install Gemini CLI** (if not already):
 
-No extra setup. Claude Code opens a browser for Keycloak login when you first use a tool. Make sure the full Docker stack is up (`docker compose up -d --build`).
+```bash
+npm install -g @anthropic/gemini-cli
+# or
+npx @anthropic/gemini-cli
+```
 
-**Option B — Static tokens (recommended for local dev)**
+**2. Start the server in static-token mode** (see above), then:
 
-Start the server with `.env.llm` (see above), then tell Claude Code to send the token header. Edit `.mcp.json`:
+```bash
+cd StockSonar
+gemini
+```
+
+Gemini CLI auto-discovers `.gemini/settings.json` and connects to StockSonar. Verify with:
+
+```
+/mcp
+```
+
+You should see `stocksonar (CONNECTED)` with all tools listed. Then use tools naturally:
+
+```
+> Get the stock quote for RELIANCE
+> Add TCS, INFY, HDFCBANK to my portfolio and run a health check
+> Generate a full portfolio risk report
+> What would happen if RBI cuts rates by 50bps?
+```
+
+**One-liner alternative** (skip the config file):
+
+```bash
+gemini mcp add --transport http stocksonar http://localhost:8000/mcp \
+  --header "Authorization: Bearer analyst-token" --trust
+```
+
+**MCP Prompts as slash commands** — StockSonar prompts work as Gemini CLI slash commands:
+
+```
+/morning_risk_brief
+/rebalance_suggestions
+/earnings_exposure
+```
+
+### Cursor
+
+`.cursor/mcp.json` is already configured with the static `analyst-token`. After starting the server in static-token mode:
+
+1. Open the repo in Cursor
+2. Go to **Settings → MCP** and verify `stocksonar` shows as connected (green dot)
+3. In Agent mode, ask Cursor to use StockSonar tools
+
+### Claude Code / Claude Desktop
+
+The repo includes `.mcp.json` at the root for Claude Code. Edit it to add the static token header:
 
 ```json
 {
@@ -253,28 +302,7 @@ Start the server with `.env.llm` (see above), then tell Claude Code to send the 
 }
 ```
 
-Then open Claude Code in the repo and use tools naturally:
-
-```
-> Use get_stock_quote to check RELIANCE
-> Add TCS, INFY, HDFCBANK to my portfolio and run a health check
-> Generate a portfolio risk report
-```
-
-### Cursor
-
-`.cursor/mcp.json` is already configured with the static `analyst-token`. After starting the server in static-token mode:
-
-1. Open the repo in Cursor
-2. Go to **Settings → MCP** and verify `stocksonar` shows as connected (green dot)
-3. In Agent mode, ask Cursor to use StockSonar tools
-
-### Claude Desktop
-
-Claude Desktop supports MCP via stdio. Use `npx @anthropic/mcp-remote` to bridge stdio → streamable-http:
-
-1. Start the server in static-token mode (see above)
-2. Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+For Claude Desktop, add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
@@ -291,9 +319,7 @@ Claude Desktop supports MCP via stdio. Use `npx @anthropic/mcp-remote` to bridge
 }
 ```
 
-3. Restart Claude Desktop. StockSonar tools appear in the hammer menu.
-
-### Other MCP clients (OpenAI, open-source)
+### Other MCP clients
 
 Any client that speaks MCP over streamable-http works. Point it at `http://localhost:8000/mcp` with header `Authorization: Bearer analyst-token` (static mode) or use the Keycloak OAuth flow.
 
