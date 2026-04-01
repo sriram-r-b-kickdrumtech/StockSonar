@@ -206,6 +206,117 @@ PYTHONPATH=src pytest tests -m "not integration" -q
 
 ---
 
+## Using StockSonar with LLMs (Claude Code / Cursor / Claude Desktop)
+
+StockSonar is a standard MCP server — any MCP-compatible LLM client can connect and use all tools, resources, and prompts.
+
+### Quick start (static tokens — no Keycloak login needed)
+
+Switch the server to **static-token mode** so the LLM client can authenticate with a simple bearer token header instead of an OAuth browser flow:
+
+```bash
+# Restart MCP server with static tokens
+docker compose down mcp-server
+docker compose --env-file .env.llm up -d --build mcp-server
+```
+
+This reads `.env.llm` which sets `AUTH_MODE=static` and defines three tokens:
+
+| Token | Tier | All PS2 tools? |
+|-------|------|----------------|
+| `analyst-token` | Analyst | Yes — full access |
+| `premium-token` | Premium | Risk tools only |
+| `free-token` | Free | Basic portfolio + market |
+
+### Claude Code
+
+The repo includes `.mcp.json` at the root. Claude Code discovers it automatically.
+
+**Option A — OAuth flow (Keycloak running)**
+
+No extra setup. Claude Code opens a browser for Keycloak login when you first use a tool. Make sure the full Docker stack is up (`docker compose up -d --build`).
+
+**Option B — Static tokens (recommended for local dev)**
+
+Start the server with `.env.llm` (see above), then tell Claude Code to send the token header. Edit `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "stocksonar": {
+      "url": "http://localhost:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer analyst-token"
+      }
+    }
+  }
+}
+```
+
+Then open Claude Code in the repo and use tools naturally:
+
+```
+> Use get_stock_quote to check RELIANCE
+> Add TCS, INFY, HDFCBANK to my portfolio and run a health check
+> Generate a portfolio risk report
+```
+
+### Cursor
+
+`.cursor/mcp.json` is already configured with the static `analyst-token`. After starting the server in static-token mode:
+
+1. Open the repo in Cursor
+2. Go to **Settings → MCP** and verify `stocksonar` shows as connected (green dot)
+3. In Agent mode, ask Cursor to use StockSonar tools
+
+### Claude Desktop
+
+Claude Desktop supports MCP via stdio. Use `npx @anthropic/mcp-remote` to bridge stdio → streamable-http:
+
+1. Start the server in static-token mode (see above)
+2. Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+
+```json
+{
+  "mcpServers": {
+    "stocksonar": {
+      "command": "npx",
+      "args": [
+        "-y", "@anthropic/mcp-remote",
+        "http://localhost:8000/mcp",
+        "--header", "Authorization: Bearer analyst-token"
+      ]
+    }
+  }
+}
+```
+
+3. Restart Claude Desktop. StockSonar tools appear in the hammer menu.
+
+### Other MCP clients (OpenAI, open-source)
+
+Any client that speaks MCP over streamable-http works. Point it at `http://localhost:8000/mcp` with header `Authorization: Bearer analyst-token` (static mode) or use the Keycloak OAuth flow.
+
+### Switching back to Keycloak auth
+
+```bash
+docker compose down mcp-server
+docker compose up -d --build mcp-server   # uses default .env / no env-file override
+```
+
+### Available tools for the LLM
+
+| Category | Tools |
+|----------|-------|
+| **Market** | `get_stock_quote`, `get_price_history`, `get_index_data`, `refresh_market_overview` |
+| **Portfolio** | `add_to_portfolio`, `remove_from_portfolio`, `get_portfolio_summary` |
+| **PS2 Risk** | `portfolio_health_check`, `check_concentration_risk`, `check_mf_overlap`, `check_macro_sensitivity`, `detect_sentiment_shift` |
+| **Cross-source** | `portfolio_risk_report`, `what_if_analysis`, `cross_reference_signals` |
+| **Resources** | `market://overview`, `macro://snapshot`, `portfolio://{user}/holdings`, `portfolio://{user}/alerts`, `portfolio://{user}/risk_score` |
+| **Prompts** | `morning_risk_brief`, `rebalance_suggestions`, `earnings_exposure` |
+
+---
+
 ## Architecture (short)
 
 - **Auth**: Keycloak JWTs; scopes from realm roles ([`src/stocksonar/auth/scopes.py`](src/stocksonar/auth/scopes.py)).  
