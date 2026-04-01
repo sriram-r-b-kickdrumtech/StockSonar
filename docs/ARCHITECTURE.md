@@ -10,63 +10,69 @@ StockSonar is a production-grade MCP (Model Context Protocol) server for Indian 
 
 ## System Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           MCP CLIENT (LLM)                                  │
-│                  Gemini CLI / Cursor / Claude Desktop                        │
-└──────────────┬──────────────────────────────────────────┬───────────────────┘
-               │ 1. GET /mcp → 401                        │ 3. Bearer JWT
-               │ 2. OAuth 2.1 + PKCE                      │    (every request)
-               ▼                                          ▼
-┌──────────────────────────┐              ┌──────────────────────────────────┐
-│      KEYCLOAK            │              │       MCP SERVER (FastMCP)       │
-│   (Authorization Server) │              │     http://localhost:8000/mcp    │
-│  localhost:8090           │              │                                  │
-│                          │              │  ┌────────────────────────────┐  │
-│  Realm: stocksonar       │   JWT with   │  │   Auth Layer               │  │
-│  Client: stocksonar-mcp  │──────────────│  │   ┌──────────────────┐    │  │
-│  (public, PKCE)          │   realm      │  │   │ JWTVerifier      │    │  │
-│                          │   roles      │  │   │ (JWKS, iss, aud) │    │  │
-│  Users:                  │              │  │   └────────┬─────────┘    │  │
-│   free    → tier-free    │              │  │            │              │  │
-│   premium → tier-premium │              │  │   ┌────────▼─────────┐    │  │
-│   analyst → tier-analyst │              │  │   │RoleMappingVerifier│   │  │
-│                          │              │  │   │ role → scopes     │    │  │
-│  /.well-known/           │              │  │   └────────┬─────────┘    │  │
-│  openid-configuration    │              │  │            │              │  │
-└──────────────────────────┘              │  │   ┌────────▼─────────┐    │  │
-                                          │  │   │ require_scopes() │    │  │
-                                          │  │   │ per-tool auth    │    │  │
-                                          │  │   └─────────────────┘    │  │
-                                          │  └────────────────────────────┘  │
-                                          │                                  │
-                                          │  ┌────────────────────────────┐  │
-                                          │  │   Middleware               │  │
-                                          │  │   • Rate limiter (Redis)  │  │
-                                          │  │   • HTTP 429 rewriter     │  │
-                                          │  │   • Audit logger          │  │
-                                          │  └────────────────────────────┘  │
-                                          │                                  │
-                                          │  ┌────────────────────────────┐  │
-                                          │  │   Tool / Resource Layer    │  │
-                                          │  │   30+ tools, 5 resources, │  │
-                                          │  │   3 prompts               │  │
-                                          │  └──────────┬─────────────────┘  │
-                                          │             │                    │
-                                          └─────────────┼────────────────────┘
-                                                        │
-                              ┌──────────────────────────┼──────────────────────┐
-                              │                          │                      │
-                              ▼                          ▼                      ▼
-                    ┌──────────────┐          ┌──────────────┐       ┌──────────────┐
-                    │    REDIS     │          │  UPSTREAM     │       │  UPSTREAM     │
-                    │              │          │  APIs (free)  │       │  APIs (keyed) │
-                    │ • Cache      │          │               │       │               │
-                    │ • Rate limits│          │ • Yahoo Fin.  │       │ • GNews API   │
-                    │ • Portfolios │          │ • NSE India   │       │ • Finnhub     │
-                    │ • Watchlists │          │ • MFapi.in    │       │ • Alpha Vant. │
-                    │ • Alerts     │          │ • RBI DBIE    │       │               │
-                    └──────────────┘          └──────────────┘       └──────────────┘
+```mermaid
+graph TB
+    subgraph Client["MCP Client (LLM)"]
+        GeminiCLI["Gemini CLI / Cursor / Claude Desktop"]
+    end
+
+    subgraph Keycloak["Keycloak :8090<br/>(Authorization Server)"]
+        KC_Realm["Realm: stocksonar"]
+        KC_Client["Client: stocksonar-mcp<br/>(public, PKCE)"]
+        KC_Users["Users:<br/>free → tier-free<br/>premium → tier-premium<br/>analyst → tier-analyst"]
+        KC_OIDC["/.well-known/<br/>openid-configuration"]
+    end
+
+    subgraph MCP["MCP Server :8000 (FastMCP)"]
+        direction TB
+        subgraph AuthLayer["Auth Layer"]
+            JWT["JWTVerifier<br/>(JWKS, issuer, audience)"]
+            RoleMap["RoleMappingJWTVerifier<br/>realm role → OAuth scopes"]
+            ScopeCheck["require_scopes()<br/>per-tool enforcement"]
+            JWT --> RoleMap --> ScopeCheck
+        end
+        subgraph Middleware["Middleware"]
+            RateLimit["Rate Limiter<br/>(Redis sliding window)"]
+            HTTP429["HTTP 429 Rewriter"]
+            Audit["Audit Logger<br/>(JSON structured)"]
+        end
+        subgraph ToolLayer["Tool / Resource / Prompt Layer"]
+            Tools["30+ Tools"]
+            Resources["5 Resources"]
+            Prompts["3 Prompts"]
+        end
+        AuthLayer --> Middleware --> ToolLayer
+    end
+
+    subgraph DataStores["Data & Upstream"]
+        Redis[("Redis<br/>Cache · Rate Limits<br/>Portfolios · Alerts")]
+        subgraph FreeAPIs["Upstream APIs (no key)"]
+            YF["Yahoo Finance"]
+            NSE["NSE India"]
+            MFapi["MFapi.in"]
+            RBI["RBI DBIE"]
+        end
+        subgraph KeyedAPIs["Upstream APIs (key required)"]
+            GNews["GNews API"]
+            Finnhub["Finnhub"]
+            AV["Alpha Vantage"]
+        end
+    end
+
+    GeminiCLI -- "1. GET /mcp → 401<br/>2. OAuth 2.1 + PKCE" --> Keycloak
+    Keycloak -- "JWT with<br/>realm roles" --> MCP
+    GeminiCLI -- "3. Bearer JWT<br/>(every request)" --> MCP
+    ToolLayer --> Redis
+    ToolLayer --> FreeAPIs
+    ToolLayer --> KeyedAPIs
+
+    style Client fill:#e3f2fd,stroke:#1565c0,color:#0d1117
+    style Keycloak fill:#fff3e0,stroke:#e65100,color:#0d1117
+    style MCP fill:#e8f5e9,stroke:#2e7d32,color:#0d1117
+    style DataStores fill:#f3e5f5,stroke:#6a1b9a,color:#0d1117
+    style AuthLayer fill:#c8e6c9,stroke:#388e3c,color:#0d1117
+    style Middleware fill:#c8e6c9,stroke:#388e3c,color:#0d1117
+    style ToolLayer fill:#c8e6c9,stroke:#388e3c,color:#0d1117
 ```
 
 ---
@@ -75,63 +81,37 @@ StockSonar is a production-grade MCP (Model Context Protocol) server for Indian 
 
 ### The full flow step-by-step
 
-```
-MCP Client                    MCP Server (:8000)              Keycloak (:8090)
-    │                              │                              │
-    │  1. GET /mcp                 │                              │
-    │─────────────────────────────>│                              │
-    │                              │                              │
-    │  2. 401 Unauthorized         │                              │
-    │  WWW-Authenticate: Bearer    │                              │
-    │    resource_metadata=        │                              │
-    │    "/.well-known/oauth-      │                              │
-    │    protected-resource/mcp"   │                              │
-    │<─────────────────────────────│                              │
-    │                              │                              │
-    │  3. GET /.well-known/oauth-protected-resource/mcp           │
-    │─────────────────────────────>│                              │
-    │                              │                              │
-    │  4. JSON: {                  │                              │
-    │    resource: ".../mcp",      │                              │
-    │    authorization_servers:    │                              │
-    │      ["localhost:8090/..."], │                              │
-    │    scopes_supported: [...]   │                              │
-    │  }                           │                              │
-    │<─────────────────────────────│                              │
-    │                              │                              │
-    │  5. GET /.well-known/openid-configuration                   │
-    │─────────────────────────────────────────────────────────────>│
-    │                              │                              │
-    │  6. OIDC metadata (auth_endpoint, token_endpoint, ...)      │
-    │<─────────────────────────────────────────────────────────────│
-    │                              │                              │
-    │  7. Browser → Keycloak login page                           │
-    │     (authorization_code + PKCE: code_challenge S256)         │
-    │─────────────────────────────────────────────────────────────>│
-    │                              │                              │
-    │  8. User enters credentials (e.g. analyst / analystpass)     │
-    │                              │                              │
-    │  9. Redirect to callback with authorization code             │
-    │<─────────────────────────────────────────────────────────────│
-    │                              │                              │
-    │  10. POST /token (code + code_verifier)                      │
-    │─────────────────────────────────────────────────────────────>│
-    │                              │                              │
-    │  11. JWT access token (contains realm_access.roles)           │
-    │<─────────────────────────────────────────────────────────────│
-    │                              │                              │
-    │  12. POST /mcp + Authorization: Bearer <JWT>                 │
-    │─────────────────────────────>│                              │
-    │                              │  13. Validate JWT:            │
-    │                              │      • JWKS signature         │
-    │                              │      • issuer match           │
-    │                              │      • audience = "account"   │
-    │                              │      • expiry                 │
-    │                              │      • Extract realm roles    │
-    │                              │      • Map to scopes          │
-    │                              │                              │
-    │  14. MCP response (tools)    │                              │
-    │<─────────────────────────────│                              │
+```mermaid
+sequenceDiagram
+    participant C as MCP Client<br/>(Gemini CLI)
+    participant M as MCP Server<br/>(:8000)
+    participant K as Keycloak<br/>(:8090)
+    participant B as Browser
+
+    Note over C,K: Phase 1 — Discovery
+    C->>M: 1. GET /mcp
+    M-->>C: 2. 401 Unauthorized<br/>WWW-Authenticate: Bearer<br/>resource_metadata="/.well-known/oauth-protected-resource/mcp"
+
+    C->>M: 3. GET /.well-known/oauth-protected-resource/mcp
+    M-->>C: 4. JSON: { authorization_servers: ["localhost:8090/..."],<br/>scopes_supported: [...] }
+
+    C->>K: 5. GET /.well-known/openid-configuration
+    K-->>C: 6. OIDC metadata (auth_endpoint, token_endpoint, ...)
+
+    Note over C,K: Phase 2 — OAuth 2.1 + PKCE
+    C->>B: 7. Open browser → Keycloak login
+    Note right of B: code_challenge_method=S256
+    B->>K: 8. User enters credentials<br/>(e.g. analyst / analystpass)
+    K-->>B: 9. Redirect with authorization code
+    B-->>C: Authorization code via callback
+
+    C->>K: 10. POST /token<br/>(code + code_verifier)
+    K-->>C: 11. JWT access token<br/>(contains realm_access.roles)
+
+    Note over C,M: Phase 3 — Authenticated MCP Session
+    C->>M: 12. POST /mcp<br/>Authorization: Bearer JWT
+    Note right of M: 13. Validate JWT:<br/>• JWKS signature<br/>• issuer match<br/>• audience = "account"<br/>• expiry check<br/>• Extract realm roles<br/>• Map roles → scopes
+    M-->>C: 14. MCP response (tools discovered)
 ```
 
 ### Key standards implemented
@@ -196,19 +176,36 @@ Defined in `keycloak/stocksonar-realm.json`, auto-imported on first boot via `--
 
 Keycloak issues JWTs with `realm_access.roles`. The MCP server's `RoleMappingJWTVerifier` extracts roles from the JWT claims and maps them to OAuth-style scopes:
 
-```
-JWT claims                    MCP Server
-─────────                    ──────────
-realm_access.roles:          RoleMappingJWTVerifier
-  ["tier-analyst"]   ──────>   scopes_for_realm_roles()
-                               ──────> ["filings:deep", "filings:read",
-                                        "fundamentals:read", "macro:historical",
-                                        "macro:read", "market:read", "mf:read",
-                                        "news:read", "news:sentiment",
-                                        "portfolio:read", "portfolio:risk",
-                                        "portfolio:write", "research:generate",
-                                        "technicals:read", "watchlist:read",
-                                        "watchlist:write"]
+```mermaid
+graph LR
+    subgraph JWT["JWT Claims"]
+        Roles["realm_access.roles:<br/>[&quot;tier-analyst&quot;]"]
+    end
+
+    subgraph Server["MCP Server"]
+        Verifier["RoleMappingJWTVerifier"]
+        Mapper["scopes_for_realm_roles()"]
+        Verifier --> Mapper
+    end
+
+    subgraph Scopes["Effective Scopes (16)"]
+        S1["market:read"]
+        S2["portfolio:read / :write / :risk"]
+        S3["fundamentals:read"]
+        S4["technicals:read"]
+        S5["macro:read / :historical"]
+        S6["news:read / :sentiment"]
+        S7["filings:read / :deep"]
+        S8["research:generate"]
+        S9["mf:read, watchlist:*"]
+    end
+
+    Roles --> Verifier
+    Mapper --> Scopes
+
+    style JWT fill:#fff3e0,stroke:#e65100,color:#0d1117
+    style Server fill:#e8f5e9,stroke:#2e7d32,color:#0d1117
+    style Scopes fill:#e3f2fd,stroke:#1565c0,color:#0d1117
 ```
 
 Each tool is registered with `@mcp.tool(auth=require_scopes("scope:name"))`. FastMCP checks the token's scopes before execution.
@@ -256,21 +253,22 @@ Each tool is registered with `@mcp.tool(auth=require_scopes("scope:name"))`. Fas
 
 ### Enforcement Points
 
-```
-Request arrives
-  │
-  ├── HTTP layer: Starlette middleware checks Bearer token
-  │     └── No token / expired / bad signature → 401 + WWW-Authenticate
-  │
-  ├── FastMCP layer: require_scopes() on each tool
-  │     └── Token valid but missing required scope → 403 insufficient_scope
-  │
-  ├── Tool layer: enforce_tool_policies()
-  │     ├── Rate limit check (Redis sliding window)
-  │     │     └── Over limit → 429 + Retry-After header
-  │     └── Audit log (success/failure with user ID, tier, tool name, timestamp)
-  │
-  └── Tool executes → ok_response() with source, disclaimer, timestamp, data
+```mermaid
+flowchart TD
+    A["Request arrives<br/>POST /mcp + Bearer JWT"] --> B{"HTTP Layer<br/>Starlette Middleware"}
+    B -- "No token / expired /<br/>bad signature" --> B1["401 Unauthorized<br/>+ WWW-Authenticate"]
+    B -- "Token valid" --> C{"FastMCP Layer<br/>require_scopes()"}
+    C -- "Missing required scope" --> C1["403 Forbidden<br/>insufficient_scope"]
+    C -- "Scopes OK" --> D{"Tool Layer<br/>enforce_tool_policies()"}
+    D -- "Rate limit exceeded" --> D1["429 Too Many Requests<br/>+ Retry-After header"]
+    D -- "Within limits" --> E["Tool Executes"]
+    E --> F["Audit Log<br/>(user_id, tier, tool, timestamp)"]
+    F --> G["ok_response()<br/>{source, disclaimer,<br/>timestamp, data}"]
+
+    style B1 fill:#ffcdd2,stroke:#c62828,color:#0d1117
+    style C1 fill:#ffcdd2,stroke:#c62828,color:#0d1117
+    style D1 fill:#fff3e0,stroke:#e65100,color:#0d1117
+    style G fill:#c8e6c9,stroke:#2e7d32,color:#0d1117
 ```
 
 ---
@@ -289,9 +287,24 @@ Redis sorted set per user (`ratelimit:{user_sub}`), scored by Unix timestamp. 1-
 
 ### How 429 is returned
 
-1. `tool_guard.py` calls `rate_limiter.check()` — if over limit, raises `RateLimitToolError` with `retry_after` seconds
-2. FastMCP wraps the error into an MCP tool error response
-3. `http_rate_limit.py` (ASGI middleware) intercepts the response, detects the rate-limit marker, rewrites to **HTTP 429** with JSON-RPC error and **`Retry-After`** header
+```mermaid
+sequenceDiagram
+    participant Tool as Tool Function
+    participant Guard as tool_guard.py
+    participant Redis as Redis<br/>(Sorted Set)
+    participant FastMCP as FastMCP<br/>Framework
+    participant MW as http_rate_limit.py<br/>(ASGI Middleware)
+    participant Client as MCP Client
+
+    Tool->>Guard: enforce_tool_policies()
+    Guard->>Redis: ZREMRANGEBYSCORE + ZCARD<br/>ratelimit:{user_sub}
+    Redis-->>Guard: count = 31 (limit = 30)
+    Guard->>Guard: Raise RateLimitToolError<br/>(retry_after=2847)
+    Guard-->>FastMCP: MCP tool error response<br/>(__STOCKSONAR_RATE_LIMIT__ retry_after=2847)
+    FastMCP-->>MW: HTTP 200 with error body
+    MW->>MW: Detect rate-limit marker<br/>Rewrite response
+    MW-->>Client: HTTP 429<br/>Retry-After: 2847<br/>JSON-RPC error code -32029
+```
 
 ---
 
@@ -379,62 +392,112 @@ Every tool returns:
 
 Combines data from 5+ sources in a single tool call:
 
-```
-portfolio_risk_report
-  │
-  ├── Yahoo Finance  → Current LTP, PE ratio, market cap for top holdings
-  ├── NSE India      → Sector mapping derived from holdings
-  ├── RBI DBIE       → Repo rate, CPI, macro conditions
-  ├── GNews          → Recent news for each holding, sentiment scores
-  ├── MFapi.in       → Overlap with popular large-cap MF schemes
-  └── Yahoo Finance  → Latest quarterly income statement preview
-  
-  Output: structured risk report with:
-    • Holdings valuation (symbol, LTP, current_value, allocation_pct, sector)
-    • Risk flags (concentration, sector tilt) with thresholds
-    • Macro assessment (adverse_macro boolean, reasons)
-    • News summary per holding
-    • MF overlap count and example scheme names
-    • Fundamentals slice (PE, market cap, income preview)
-    • Narrative parts with source citations
-    • Sources used (list of all APIs queried)
+```mermaid
+graph LR
+    subgraph Sources["Data Sources"]
+        YF["Yahoo Finance<br/>LTP, PE, Market Cap"]
+        NSE["NSE / Holdings<br/>Sector mapping"]
+        RBI["RBI DBIE<br/>Repo rate, CPI"]
+        GN["GNews<br/>News + sentiment"]
+        MF["MFapi.in<br/>MF overlap"]
+        YF2["Yahoo Finance<br/>Quarterly income"]
+    end
+
+    subgraph Tool["portfolio_risk_report"]
+        Combine["Cross-source<br/>aggregation"]
+    end
+
+    subgraph Output["Structured Output"]
+        V["Holdings valuation<br/>(LTP, allocation_pct, sector)"]
+        R["Risk flags<br/>(concentration, sector tilt)"]
+        MA["Macro assessment<br/>(adverse_macro, reasons)"]
+        NS["News summary<br/>per holding"]
+        MO["MF overlap count<br/>+ scheme names"]
+        FS["Fundamentals slice<br/>(PE, market cap, income)"]
+        NR["Narrative with<br/>source citations"]
+    end
+
+    YF --> Combine
+    NSE --> Combine
+    RBI --> Combine
+    GN --> Combine
+    MF --> Combine
+    YF2 --> Combine
+    Combine --> Output
+
+    style Sources fill:#e3f2fd,stroke:#1565c0,color:#0d1117
+    style Tool fill:#fff3e0,stroke:#e65100,color:#0d1117
+    style Output fill:#e8f5e9,stroke:#2e7d32,color:#0d1117
 ```
 
 ### `what_if_analysis`
 
 Simulates RBI rate change scenarios:
 
-```
-what_if_analysis(rbi_rate_change_bps=-50)
-  │
-  ├── Portfolio holdings → sector classification
-  ├── Sensitivity rules  → Financials: +1.5% per -25bps, IT: -0.5% per -25bps
-  ├── Yahoo Finance      → Historical Nifty returns around past easing windows
-  └── Macro snapshot     → Current RBI repo rate for context
-  
-  Output:
-    • Per-holding impact estimate (sector, sensitivity, estimated_pct_change)
-    • Historical reaction (Nifty returns around past rate cut dates)
-    • Scenario summary
+```mermaid
+graph LR
+    subgraph Inputs["Inputs"]
+        Rate["rbi_rate_change_bps<br/>(e.g. -50)"]
+        Holdings["Portfolio holdings<br/>sector classification"]
+        Rules["Sensitivity rules<br/>Financials: +1.5%/-25bps<br/>IT: -0.5%/-25bps"]
+        Nifty["Yahoo Finance<br/>Historical Nifty returns<br/>around past easing"]
+        Macro["Macro snapshot<br/>Current RBI repo rate"]
+    end
+
+    subgraph WhatIf["what_if_analysis"]
+        Sim["Scenario<br/>simulation"]
+    end
+
+    subgraph Out["Output"]
+        Impact["Per-holding impact<br/>(sector, sensitivity,<br/>estimated_pct_change)"]
+        Hist["Historical reaction<br/>(Nifty around rate cuts)"]
+        Sum["Scenario summary"]
+    end
+
+    Rate --> Sim
+    Holdings --> Sim
+    Rules --> Sim
+    Nifty --> Sim
+    Macro --> Sim
+    Sim --> Out
+
+    style Inputs fill:#e3f2fd,stroke:#1565c0,color:#0d1117
+    style WhatIf fill:#fff3e0,stroke:#e65100,color:#0d1117
+    style Out fill:#e8f5e9,stroke:#2e7d32,color:#0d1117
 ```
 
 ### `cross_reference_signals`
 
 Explicit confirm/contradict analysis:
 
-```
-cross_reference_signals(symbol="RELIANCE")
-  │
-  ├── Yahoo Finance → Price change % today
-  ├── GNews         → Recent news articles + lexicon sentiment
-  └── MFapi.in      → MF scheme name overlap count
-  
-  Output:
-    • Price signal (up/down/flat with magnitude)
-    • Sentiment signal (positive/negative/neutral with score)
-    • MF signal (high/medium/low overlap)
-    • Confirmations: ["Price up + sentiment positive → confirmed"]
-    • Contradictions: ["Price down but sentiment positive → divergence"]
+```mermaid
+graph LR
+    subgraph APIs["Data Sources"]
+        YF["Yahoo Finance<br/>Price change % today"]
+        GN["GNews<br/>News + lexicon sentiment"]
+        MF["MFapi.in<br/>MF scheme overlap"]
+    end
+
+    subgraph XRef["cross_reference_signals"]
+        Analyze["Confirm /<br/>contradict<br/>analysis"]
+    end
+
+    subgraph Signals["Output Signals"]
+        PS["Price signal<br/>(up/down/flat)"]
+        SS["Sentiment signal<br/>(positive/negative)"]
+        MS["MF signal<br/>(high/medium/low)"]
+        Confirm["Confirmations<br/>'Price up + sentiment<br/>positive → confirmed'"]
+        Contra["Contradictions<br/>'Price down but sentiment<br/>positive → divergence'"]
+    end
+
+    YF --> Analyze
+    GN --> Analyze
+    MF --> Analyze
+    Analyze --> Signals
+
+    style APIs fill:#e3f2fd,stroke:#1565c0,color:#0d1117
+    style XRef fill:#fff3e0,stroke:#e65100,color:#0d1117
+    style Signals fill:#e8f5e9,stroke:#2e7d32,color:#0d1117
 ```
 
 ---
@@ -443,26 +506,61 @@ cross_reference_signals(symbol="RELIANCE")
 
 ### How it works
 
-```
-Risk tool runs (e.g., portfolio_health_check)
-  │
-  ├── Computes risk flags
-  ├── Merges alerts via merge_risk_alerts() → Redis
-  ├── Calls notify_portfolio_resources_updated(ctx, user_id)
-  │     └── Sends ResourceUpdatedNotification for:
-  │           • portfolio://{user_id}/holdings
-  │           • portfolio://{user_id}/alerts
-  │           • portfolio://{user_id}/risk_score
-  │
-  └── MCP client (if subscribed) receives notification
-        └── Client re-reads the resource to get updated data
+```mermaid
+sequenceDiagram
+    participant RT as Risk Tool<br/>(e.g. portfolio_health_check)
+    participant MA as merge_risk_alerts()
+    participant Redis as Redis
+    participant Notify as notify_portfolio_resources_updated()
+    participant Client as MCP Client<br/>(subscribed)
+
+    RT->>RT: Compute risk flags
+    RT->>MA: Pass new alerts
+    MA->>Redis: Upsert alerts<br/>(precedence merging,<br/>max 30, 24h TTL)
+    RT->>Notify: ctx, user_id
+    Notify-->>Client: ResourceUpdatedNotification<br/>portfolio://{user_id}/holdings
+    Notify-->>Client: ResourceUpdatedNotification<br/>portfolio://{user_id}/alerts
+    Notify-->>Client: ResourceUpdatedNotification<br/>portfolio://{user_id}/risk_score
+    Client->>Redis: Re-read updated resources
+    Redis-->>Client: Latest alerts & risk score
 ```
 
 Similarly, `refresh_market_overview` invalidates the market cache and fires `notify_market_overview_updated` for `market://overview` subscribers.
 
 ### Alert Merging
 
-`portfolio_alerts.py` implements precedence-based alert merging:
+```mermaid
+flowchart LR
+    subgraph Producers["Alert Producers"]
+        HC["portfolio_health_check"]
+        CR["check_concentration_risk"]
+        MS["check_macro_sensitivity"]
+        SS["detect_sentiment_shift"]
+        MO["check_mf_overlap"]
+    end
+
+    subgraph Merge["merge_risk_alerts()"]
+        Key["Composite key<br/>(type + symbol/sector)"]
+        Prec["Precedence rules<br/>health_check wins<br/>on duplicates"]
+        Cap["Cap: max 30 alerts<br/>sorted by type"]
+    end
+
+    subgraph Redis["Redis"]
+        Store[("portfolio:{user}/alerts<br/>TTL: 24 hours")]
+    end
+
+    HC -- "HEALTH_SOURCE<br/>(authoritative)" --> Merge
+    CR --> Merge
+    MS --> Merge
+    SS --> Merge
+    MO --> Merge
+    Merge --> Store
+
+    style Producers fill:#e3f2fd,stroke:#1565c0,color:#0d1117
+    style Merge fill:#fff3e0,stroke:#e65100,color:#0d1117
+    style Redis fill:#ffcdd2,stroke:#c62828,color:#0d1117
+```
+
 - Each alert has a composite key (type + symbol/sector)
 - Alerts from `portfolio_health_check` are authoritative (won't be overwritten by other tools)
 - Maximum 30 alerts retained, sorted by type
@@ -492,31 +590,32 @@ Failed calls (rate limit exceeded) include `detail.error` and `detail.retry_afte
 
 ## Docker Compose Deployment
 
-### Services
+### Services & Network Topology
 
-```yaml
-services:
-  redis:        # Redis 7 Alpine — cache, rate limits, portfolio store
-  keycloak:     # Keycloak 26.0 — OAuth 2.1 authorization server
-  mcp-server:   # Python 3.12 — FastMCP StockSonar server
-```
+```mermaid
+graph TB
+    subgraph DockerNet["Docker Compose Network"]
+        Redis[("Redis :6379<br/>Alpine 7<br/>Cache · Rate Limits<br/>Portfolio Store")]
+        KC["Keycloak :8080<br/>v26.0<br/>OAuth 2.1 AuthZ Server"]
+        MCP_S["MCP Server :8000<br/>Python 3.12<br/>FastMCP StockSonar"]
 
-### Network topology
+        MCP_S -- "redis:6379<br/>(internal)" --> Redis
+        MCP_S -- "JWKS validation<br/>keycloak:8080<br/>(internal)" --> KC
+    end
 
-```
-┌──────────────────────────────────────────────┐
-│              Docker Compose Network           │
-│                                              │
-│  ┌─────────┐   ┌──────────┐   ┌──────────┐  │
-│  │  Redis   │   │ Keycloak │   │   MCP    │  │
-│  │  :6379   │   │  :8080   │   │  :8000   │  │
-│  │ (internal)│   │          │   │          │  │
-│  └─────────┘   └──────────┘   └──────────┘  │
-│                    │               │          │
-└────────────────────┼───────────────┼──────────┘
-                     │               │
-              Host :8090       Host :8000
-              (Keycloak UI)    (MCP endpoint)
+    subgraph Host["Host Machine"]
+        H_KC["Host :8090<br/>(Keycloak UI)"]
+        H_MCP["Host :8000<br/>(MCP endpoint)"]
+    end
+
+    KC -. "port mapping<br/>8080 → 8090" .-> H_KC
+    MCP_S -. "port mapping<br/>8000 → 8000" .-> H_MCP
+
+    style DockerNet fill:#e3f2fd,stroke:#1565c0,color:#0d1117
+    style Host fill:#f3e5f5,stroke:#6a1b9a,color:#0d1117
+    style Redis fill:#ffcdd2,stroke:#c62828,color:#0d1117
+    style KC fill:#fff3e0,stroke:#e65100,color:#0d1117
+    style MCP_S fill:#c8e6c9,stroke:#2e7d32,color:#0d1117
 ```
 
 - Redis is **internal only** — not exposed to the host

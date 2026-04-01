@@ -27,13 +27,20 @@ curl -s http://localhost:8000/health | python3 -m json.tool
 
 ## Demo Flow Overview
 
-```
-SECTION 1: Auth Flow & Discovery (Authentication & Authorisation — 25%)
-SECTION 2: Free Tier — basics + permission boundary
-SECTION 3: Premium Tier — risk tools + permission boundary
-SECTION 4: Analyst Tier — full PS2 story + cross-source reasoning
-SECTION 5: Resources & Subscriptions
-SECTION 6: Prompts (slash commands)
+```mermaid
+flowchart LR
+    S1["Section 1<br/>Auth Flow &<br/>Discovery<br/>(25%)"] --> S2["Section 2<br/>Free Tier<br/>basics +<br/>boundary"]
+    S2 --> S3["Section 3<br/>Premium Tier<br/>risk tools +<br/>boundary"]
+    S3 --> S4["Section 4<br/>Analyst Tier<br/>cross-source<br/>reasoning"]
+    S4 --> S5["Section 5<br/>Resources &<br/>Subscriptions"]
+    S5 --> S6["Section 6<br/>Prompts<br/>(slash cmds)"]
+
+    style S1 fill:#fff3e0,stroke:#e65100,color:#0d1117
+    style S2 fill:#e3f2fd,stroke:#1565c0,color:#0d1117
+    style S3 fill:#e8f5e9,stroke:#2e7d32,color:#0d1117
+    style S4 fill:#f3e5f5,stroke:#6a1b9a,color:#0d1117
+    style S5 fill:#e3f2fd,stroke:#1565c0,color:#0d1117
+    style S6 fill:#e8f5e9,stroke:#2e7d32,color:#0d1117
 ```
 
 ---
