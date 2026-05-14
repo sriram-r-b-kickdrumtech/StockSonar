@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "stocksonar": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@anthropic/mcp-remote",
+        "http://15.206.82.198:8000/mcp"
+      ]
+    }
+  }
+}

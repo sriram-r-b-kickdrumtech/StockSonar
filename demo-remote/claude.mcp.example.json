@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "stocksonar": {
+      "url": "http://15.206.82.198:8000/mcp"
+    }
+  }
+}

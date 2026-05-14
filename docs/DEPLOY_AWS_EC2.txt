@@ -21,7 +21,9 @@ PART A — AWS CONSOLE (you do this)
 
 2) Launch EC2
    - AMI: Amazon Linux 2023 (or Ubuntu 24.04)
-   - Type: t3.medium or larger (Keycloak needs RAM)
+   - Type: t3.small (2 GiB RAM) minimum for a stable demo; t3.medium (4 GiB) comfortable.
+     t3.micro (1 GiB) often OOMs or thrashes with Keycloak + Redis + MCP — only use with
+     added swap and low expectations.
    - Disk: 20 GB gp3 is enough for a demo
    - Attach the security group above
    - Key pair: download .pem for SSH
@@ -86,13 +88,14 @@ PART B — ON THE EC2 INSTANCE (SSH)
    curl -s http://HOST:8000/health
    curl -s http://HOST:8000/.well-known/oauth-protected-resource/mcp | head
 
-9) Point your MCP client (e.g. Gemini CLI) at the public MCP URL
+9) Point your MCP client (Gemini CLI / Claude) at the public MCP URL
 
-   In ~/.gemini/settings.json or project .gemini/settings.json:
+   Ready-made samples in repo folder demo-remote/ (JSON files use 15.206.82.198;
+   search-replace if your instance IP differs). See README.md there.
 
-     "httpUrl": "http://HOST:8000/mcp"
+   Gemini: copy gemini.settings.example.json — then `gemini` → `/mcp auth stocksonar`.
 
-   OAuth browser flow will open http://HOST:8090 for Keycloak.
+   OAuth browser flow will open http://HOST:8090 for Keycloak (same host as MCP).
 
 
 --------------------------------------------------------------------------------
@@ -114,5 +117,19 @@ TROUBLESHOOTING
 - Keycloak slow first boot: wait, then check  docker compose logs -f keycloak
 
 - Cannot switch users in browser: use incognito or Keycloak logout URL with your HOST:8090
+
+- "compose build requires buildx 0.17.0 or later": install docker-buildx in the same
+  directory as docker-compose (often /usr/libexec/docker/cli-plugins or
+  /usr/local/lib/docker/cli-plugins). Example (adjust PLUGDIR and VER if needed):
+
+     ARCH=$(uname -m); case "$ARCH" in x86_64) BARCH=amd64;; aarch64) BARCH=arm64;; *) exit 1;; esac
+     VER=v0.19.3
+     PLUGDIR=/usr/libexec/docker/cli-plugins
+     sudo mkdir -p "$PLUGDIR"
+     sudo curl -fsSL "https://github.com/docker/buildx/releases/download/${VER}/buildx-${VER}.linux-${BARCH}" -o "$PLUGDIR/docker-buildx"
+     sudo chmod +x "$PLUGDIR/docker-buildx"
+     docker buildx version
+
+  Or: sudo dnf install -y docker-buildx-plugin   (if the package exists on your AMI)
 
 ================================================================================
