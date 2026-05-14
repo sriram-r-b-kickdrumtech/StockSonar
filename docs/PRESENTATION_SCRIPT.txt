@@ -1,0 +1,638 @@
+================================================================================
+  STOCKSONAR PS2 — PRESENTATION SCRIPT
+  "Portfolio Risk & Alert Monitor"
+  Everything you need to ace the demo, minute by minute
+================================================================================
+
+TOTAL TIME: ~20-25 minutes (adjustable — see timing notes per section)
+
+
+================================================================================
+  BEFORE YOU START (5 min prep)
+================================================================================
+
+TERMINAL 1 — Start the stack:
+  docker compose up -d --build
+
+TERMINAL 2 — Wait for Keycloak (takes ~30-60s on first boot):
+  curl -sf http://localhost:8090/realms/stocksonar/.well-known/openid-configuration > /dev/null && echo "KEYCLOAK READY"
+  curl -s http://localhost:8000/health | python3 -m json.tool
+
+HAVE THESE TABS READY:
+  Tab 1: Terminal (for curl commands in Section 1)
+  Tab 2: Gemini CLI (for live demo in Sections 2-6)
+  Tab 3: Browser at http://localhost:8090 (Keycloak admin — admin/admin)
+  Tab 4: GitHub repo page (show README, ARCHITECTURE.md with mermaid diagrams)
+  Tab 5: VS Code / Cursor with project open (for code walkthrough)
+
+PRE-CLEAR any old tokens:
+  rm -f ~/.gemini/mcp-oauth-tokens.json
+
+
+================================================================================
+  SECTION 0: OPENING PITCH (1 min)
+  What to say, what to show
+================================================================================
+
+SHOW: GitHub README or ARCHITECTURE.md system architecture diagram on screen.
+
+SAY:
+  "StockSonar is a production-grade MCP server for Indian financial
+   intelligence. It wraps 6 free financial APIs — Yahoo Finance, NSE India,
+   RBI, MFapi, GNews, and BSE — into 30+ MCP tools, 5 resources, and 3
+   prompts. Everything is secured with OAuth 2.1 + PKCE via Keycloak, with
+   three user tiers and 16 granular scopes. The whole stack runs with one
+   docker compose command.
+
+   We chose PS2 — Portfolio Risk & Alert Monitor — because it pushes
+   MCP resources and subscriptions as first-class primitives, not just tools.
+   The system watches your portfolio, detects risks across multiple data
+   sources, and alerts you. Think of it as a personal risk analyst that
+   never sleeps."
+
+RUBRIC HIT: Demo & Usability (10%) — clear intro, context-setting.
+
+
+================================================================================
+  SECTION 1: AUTH FLOW DEMO (3 min)
+  Rubric: Authentication & Authorisation — 25%
+================================================================================
+
+This is 25% of the grade. Do NOT rush this. Show every step.
+
+--- STEP 1A: Show the 401 ---
+
+TERMINAL (curl):
+  curl -s -D- http://localhost:8000/mcp 2>&1 | head -5
+
+SAY:
+  "An unauthenticated request to the MCP endpoint returns 401 Unauthorized.
+   Notice the WWW-Authenticate header — it includes a resource_metadata URL.
+   This is RFC 9728 — Protected Resource Metadata. The client uses this to
+   discover which authorization server to talk to."
+
+--- STEP 1B: Show Protected Resource Metadata ---
+
+TERMINAL:
+  curl -s http://localhost:8000/.well-known/oauth-protected-resource/mcp | python3 -m json.tool
+
+SAY:
+  "This JSON tells any MCP client: here's the authorization server
+   (Keycloak on port 8090), and here are the 16 scopes this server
+   supports. The MCP server and the auth server are completely separate
+   — that's the Resource Server pattern from OAuth 2.1."
+
+POINT OUT: authorization_servers array, scopes_supported list.
+
+--- STEP 1C: Show OIDC Discovery ---
+
+TERMINAL:
+  curl -s http://localhost:8090/realms/stocksonar/.well-known/openid-configuration | python3 -m json.tool | head -15
+
+SAY:
+  "Keycloak's OIDC discovery endpoint. The client gets the authorization
+   endpoint, token endpoint, and JWKS URI from here. Standard OpenID Connect."
+
+--- STEP 1D: Show Keycloak Config (optional, if time) ---
+
+BROWSER: Go to http://localhost:8090 → admin/admin → Realm: stocksonar
+  - Show the client: stocksonar-mcp (public client, PKCE)
+  - Show users: free, premium, analyst with their realm roles
+  - Show the audience mapper that adds aud: "account"
+
+SAY:
+  "Three users, three realm roles. Keycloak issues JWTs with realm_access.roles.
+   Our server maps those roles to OAuth scopes — tier-free gets 7 scopes,
+   tier-premium gets 12, tier-analyst gets all 16. No scope is hardcoded in
+   the token — the mapping lives in our server code, so we control it."
+
+--- STEP 1E: Connect with Gemini CLI as free user ---
+
+TERMINAL 2 (Gemini CLI):
+  cd StockSonar
+  gemini
+
+  /mcp auth stocksonar
+  → Browser opens → log in as: free / freepass
+
+SAY:
+  "Now watch the full OAuth 2.1 + PKCE flow. The browser opens to Keycloak's
+   login page. I authenticate as the free user. Keycloak issues a JWT with
+   tier-free role. Gemini CLI presents it to our MCP server, which validates
+   the JWKS signature, checks issuer, audience, expiry, extracts the role,
+   maps it to scopes. Connection established."
+
+SHOW: /mcp → should show stocksonar (CONNECTED)
+
+RUBRIC HITS:
+  [x] OAuth 2.1 + PKCE end-to-end
+  [x] Protected Resource Metadata (RFC 9728)
+  [x] 401 with WWW-Authenticate + resource_metadata
+  [x] Auth server separate from MCP server
+  [x] Bearer token validation (signature, expiry, audience)
+
+
+================================================================================
+  SECTION 2: FREE TIER DEMO (2 min)
+  Rubric: MCP Server Design — 25%, Auth — 25%
+================================================================================
+
+--- STEP 2A: Market data (works for free) ---
+
+TYPE IN GEMINI:
+  Get the stock quote for RELIANCE and TCS.
+
+SAY:
+  "Free tier has market:read scope. The tool returns structured JSON with
+   source citation, disclaimer, timestamp, and data. Never free-form text —
+   the server provides data, the LLM handles narrative."
+
+POINT OUT: source field says "Yahoo Finance", disclaimer present.
+
+--- STEP 2B: Portfolio CRUD (works for free) ---
+
+TYPE IN GEMINI:
+  Add RELIANCE (10 shares, avg price 2400), TCS (5 shares, avg price 3500),
+  and INFY (15 shares, avg price 1600) to my portfolio.
+  Then show me get_portfolio_summary.
+
+SAY:
+  "Portfolio management is available to all tiers. The add_to_portfolio tool
+   validates the symbol against Yahoo Finance — try adding a fake ticker
+   and it gets rejected. Sector is auto-resolved from Yahoo Finance too."
+
+--- STEP 2C: Permission boundary — CRITICAL, MUST SHOW ---
+
+TYPE IN GEMINI:
+  Run portfolio_health_check on my portfolio.
+
+EXPECTED: 403 insufficient_scope error.
+
+SAY:
+  "And here's the permission boundary. The free user has portfolio:read and
+   portfolio:write, but NOT portfolio:risk. The server returns 403 with
+   insufficient_scope. The tool isn't even discovered by the free client —
+   that's tier-aware capability negotiation. The client literally sees fewer
+   tools than an analyst would."
+
+RUBRIC HITS:
+  [x] Tier-aware capability negotiation
+  [x] Structured JSON responses with source + disclaimer
+  [x] 403 insufficient_scope
+  [x] Input validation (symbol check)
+
+
+================================================================================
+  SECTION 3: PREMIUM TIER DEMO (4 min)
+  Rubric: MCP Design — 25%, Cross-Source — 25%
+================================================================================
+
+--- STEP 3A: Switch user ---
+
+TERMINAL (separate from Gemini):
+  open "http://localhost:8090/realms/stocksonar/protocol/openid-connect/logout?redirect_uri=http://localhost:8090"
+  rm -f ~/.gemini/mcp-oauth-tokens.json
+
+IN GEMINI CLI:
+  /mcp auth stocksonar
+  → Browser → log in as: premium / premiumpass
+
+SAY:
+  "Switching to the premium user. Note the full re-authentication —
+   I logged out of Keycloak, cleared the cached token, and re-authenticated.
+   Each user gets different scopes from the same MCP server."
+
+--- STEP 3B: Build a real portfolio ---
+
+TYPE IN GEMINI:
+  Add these to my portfolio:
+  - RELIANCE, 50 shares at 2400
+  - TCS, 30 shares at 3500
+  - INFY, 20 shares at 1600
+  - HDFCBANK, 40 shares at 1550
+  - SBIN, 25 shares at 780
+  - ITC, 60 shares at 440
+  Then show get_portfolio_summary.
+
+--- STEP 3C: Risk tools (premium unlocked) ---
+
+TYPE IN GEMINI:
+  Run portfolio_health_check. What risks are flagged?
+
+SAY:
+  "Now we have portfolio:risk scope. Health check flags concentration
+   risk — any stock above 20% or sector above 40%. The alerts are persisted
+   to Redis and available via the portfolio://alerts resource. This is
+   resource subscriptions in action — when alerts change, subscribed clients
+   get notified."
+
+TYPE IN GEMINI:
+  Run check_mf_overlap for my portfolio.
+
+SAY:
+  "This cross-references my holdings against popular large-cap mutual fund
+   schemes via MFapi.in. 'Your banking exposure is higher than you think' —
+   HDFCBANK and SBIN appear in 7 of the top 10 large-cap schemes."
+
+TYPE IN GEMINI:
+  Run check_macro_sensitivity.
+
+SAY:
+  "Pulls live RBI data — repo rate, CPI, forex — and flags which holdings
+   are sensitive. Financials like HDFCBANK and SBIN are rate-sensitive. IT
+   like TCS and INFY are forex-sensitive."
+
+TYPE IN GEMINI:
+  Run detect_sentiment_shift.
+
+SAY:
+  "Compares 7-day news sentiment against 30-day baseline using GNews API
+   with date-range filtering and a lexicon scorer. Flags any holding where
+   sentiment has shifted significantly."
+
+--- STEP 3D: Premium permission boundary — MUST SHOW ---
+
+TYPE IN GEMINI:
+  Run portfolio_risk_report.
+
+EXPECTED: 403 insufficient_scope.
+
+SAY:
+  "Premium can run individual risk tools, but the cross-source reasoning
+   tools — portfolio_risk_report, what_if_analysis — require
+   research:generate scope. That's analyst-only. Clear tier boundary."
+
+TYPE IN GEMINI:
+  Run what_if_analysis with rbi_rate_change_bps=-25.
+
+EXPECTED: 403 again.
+
+SAY:
+  "Same result. The analyst tier unlocks the full cross-source reasoning
+   layer."
+
+RUBRIC HITS:
+  [x] Multiple risk tools with different data sources
+  [x] Permission boundary: premium → analyst
+  [x] Resource subscriptions (alerts persisted + notifications)
+  [x] Upstream data integration (RBI, MFapi, GNews, Yahoo Finance)
+
+
+================================================================================
+  SECTION 4: ANALYST TIER — THE BIG SHOW (5 min)
+  Rubric: Cross-Source Reasoning — 25% (this is where you win)
+================================================================================
+
+--- STEP 4A: Switch to analyst ---
+
+Same switch procedure:
+  Logout Keycloak → rm tokens → /mcp auth stocksonar → analyst / analystpass
+
+--- STEP 4B: Build a skewed portfolio (makes risk results interesting) ---
+
+TYPE IN GEMINI:
+  Add these to my portfolio:
+  - RELIANCE, 100 shares at 2400
+  - TCS, 10 shares at 3500
+  - INFY, 5 shares at 1600
+  - HDFCBANK, 80 shares at 1550
+  - SBIN, 15 shares at 780
+  - ITC, 200 shares at 440
+  - BAJFINANCE, 3 shares at 6800
+  Show get_portfolio_summary.
+
+--- STEP 4C: PORTFOLIO RISK REPORT — THE PS2 DIFFERENTIATOR ---
+
+TYPE IN GEMINI:
+  Generate a portfolio_risk_report.
+
+SAY (while it runs):
+  "This is the flagship cross-source reasoning tool. Watch what happens —
+   it pulls data from FIVE different APIs in a single tool call."
+
+SAY (after results):
+  "Look at the output:
+   - Current prices from Yahoo Finance for every holding
+   - Sector classification derived from the portfolio
+   - Macro conditions from RBI DBIE — repo rate, CPI, adverse macro check
+   - News sentiment per holding from GNews
+   - Mutual fund overlap from MFapi.in
+   - Fundamentals snapshot — PE ratios, market caps
+   - And it synthesizes all of that into risk flags with citations from
+     each source.
+
+   This is not just calling 5 APIs and concatenating results. It
+   cross-references: 'Your 45% financial sector exposure coincides with
+   an adverse macro environment where RBI rates are elevated.' That's
+   genuine cross-source reasoning with added insight."
+
+RUBRIC HITS (direct):
+  [x] Combines data from multiple APIs (5+)
+  [x] Evidence citations specific to each source
+  [x] Cross-source output adds insight beyond individual APIs
+  [x] Structured JSON, not free-form text
+
+--- STEP 4D: WHAT-IF ANALYSIS — CROSS-SOURCE REASONING ---
+
+TYPE IN GEMINI:
+  Run what_if_analysis with rbi_rate_change_bps=-50 to simulate a
+  50bps RBI rate cut. How would my portfolio react?
+
+SAY:
+  "What-if analysis. It takes each holding, classifies by sector, applies
+   rate sensitivity rules — financials gain +1.5% per -25bps, IT is neutral
+   to slightly negative. Then it pulls historical Nifty returns around past
+   rate cut dates from Yahoo Finance. Cross-references present holdings with
+   past market behavior. That's temporal cross-source reasoning."
+
+TYPE IN GEMINI:
+  Now run what_if_analysis with rbi_rate_change_bps=25 for a rate hike.
+
+SAY:
+  "Opposite scenario. Financials get hurt, IT is relatively buffered. The
+   per-holding impact estimates flip. Same tool, different scenario, same
+   cross-source methodology."
+
+--- STEP 4E: CROSS-REFERENCE SIGNALS ---
+
+TYPE IN GEMINI:
+  Run cross_reference_signals for RELIANCE. Does price action confirm
+  or contradict the news?
+
+SAY:
+  "Explicit confirm/contradict analysis. Three data sources — Yahoo Finance
+   for price signal, GNews for sentiment signal, MFapi for institutional
+   overlap signal. The tool explicitly states: 'Price up + sentiment positive
+   → confirmed' or 'Price down but sentiment positive → divergence.' This
+   is exactly what the rubric asks for — contradictions and confirmations
+   across sources explicitly identified."
+
+--- STEP 4F: Invalid symbol (bonus — input validation) ---
+
+TYPE IN GEMINI:
+  Try to add XYZFAKE with 10 shares at 500.
+
+SAY:
+  "Server-side validation. It checks against Yahoo Finance before adding.
+   Invalid symbols get rejected with a clear error. We don't just blindly
+   accept input."
+
+RUBRIC HITS:
+  [x] Cross-source tools genuinely combine multiple APIs
+  [x] Contradictions and confirmations explicitly identified
+  [x] Evidence citations specific
+  [x] Cross-source output adds insight
+  [x] Error handling (invalid input)
+
+
+================================================================================
+  SECTION 5: RESOURCES & SUBSCRIPTIONS (2 min)
+  Rubric: MCP Design — 25%
+================================================================================
+
+TYPE IN GEMINI:
+  Read these MCP resources:
+  - market://overview
+  - macro://snapshot
+  - portfolio://holdings
+  - portfolio://alerts
+  - portfolio://risk_score
+
+SAY:
+  "Five MCP resources. Portfolio resources are auth-scoped — they're keyed
+   to the JWT sub claim, so each user sees only their own data. market and
+   macro resources are shared snapshots.
+
+   The key PS2 differentiator: resource subscriptions. When any risk tool
+   runs — say portfolio_health_check — it persists alerts to Redis, then
+   fires ResourceUpdatedNotification for portfolio://alerts,
+   portfolio://holdings, and portfolio://risk_score. Any subscribed client
+   gets notified and can re-read the resource for updated data.
+
+   Similarly, refresh_market_overview invalidates the cache and notifies
+   market://overview subscribers."
+
+TYPE IN GEMINI:
+  Call refresh_market_overview.
+
+SAY:
+  "That just invalidated the market cache and triggered a subscription
+   notification. In a real deployment, a subscribed dashboard would
+   automatically refresh."
+
+
+================================================================================
+  SECTION 6: PROMPTS (1 min)
+  Rubric: MCP Design — 25%
+================================================================================
+
+TYPE IN GEMINI:
+  Use the morning_risk_brief prompt.
+
+SAY:
+  "MCP prompts are meta-instructions for the LLM. They tell the LLM which
+   tools to call and how to synthesize. morning_risk_brief pulls portfolio
+   value, overnight news for each holding, macro changes, and risk flags —
+   all orchestrated by the prompt, executed by the LLM.
+
+   We have three: morning_risk_brief for daily briefings,
+   rebalance_suggestions for concentration-based trade ideas, and
+   earnings_exposure to map holdings to upcoming earnings dates."
+
+(If time, also show:)
+  Use the rebalance_suggestions prompt.
+
+
+================================================================================
+  SECTION 7: TECHNICAL DEPTH (2-3 min, if judges ask or time allows)
+  Rubric: System Design — 15%
+================================================================================
+
+SHOW IN CODE (VS Code / Cursor):
+
+7A. RATE LIMITING
+  File: src/stocksonar/middleware/rate_limiter.py
+  SAY: "Redis sorted-set sliding window. Per-user, per-tier. Free=30/hr,
+       Premium=150/hr, Analyst=500/hr. Over limit → 429 + Retry-After."
+
+  File: src/stocksonar/middleware/http_rate_limit.py
+  SAY: "ASGI middleware intercepts MCP responses, detects rate-limit markers,
+       rewrites to proper HTTP 429 with Retry-After header."
+
+7B. CACHING
+  File: src/stocksonar/cache/redis_cache.py
+  SAY: "TTL-based per data type. Quotes 60s, news 30min, financials 24h.
+       JSON serialized, type-keyed."
+
+7C. AUDIT LOGGING
+  File: src/stocksonar/middleware/tool_guard.py
+  SAY: "Every tool call is logged as structured JSON — user ID, tier, tool
+       name, success/failure, timestamp. For rate limit failures, includes
+       retry_after."
+
+7D. API KEY ISOLATION
+  SAY: "All upstream API keys live in server-side .env. Never exposed in
+       tool responses. The Settings class loads via pydantic-settings.
+       GNews has a daily quota tracker in Redis to stay under 100/day."
+
+7E. UPSTREAM FAILURE HANDLING
+  File: src/stocksonar/upstream/yfinance_client.py (get_quote function)
+  SAY: "Every upstream call is wrapped in try/except. If Yahoo Finance
+       fails, we return cached data or a clear error — never crash. Invalid
+       tickers are caught before they poison the portfolio."
+
+SHOW ON GITHUB:
+  Open ARCHITECTURE.md → scroll through the mermaid diagrams
+  SAY: "Full architecture documentation with rendered diagrams. OAuth flow,
+       enforcement pipeline, cross-source data flow, Docker topology,
+       alert merging — all documented."
+
+
+================================================================================
+  SECTION 8: CLOSING (30 sec)
+================================================================================
+
+SAY:
+  "To summarize what we showed:
+   - Full OAuth 2.1 + PKCE with Keycloak, RFC 9728, resource server pattern
+   - Three tiers with 16 scopes, permission boundaries enforced at every layer
+   - 30+ tools, 5 resources with subscriptions, 3 prompts
+   - Cross-source reasoning combining 5+ APIs with explicit citations
+   - Redis caching, per-user rate limiting, audit logging
+   - One docker compose command to run everything
+   - And the whole thing works live with Gemini CLI right now.
+
+   Questions?"
+
+
+================================================================================
+  CHEAT SHEET — QUICK REFERENCE
+================================================================================
+
+  USERS:
+    free     / freepass      → 7 scopes (market, news, portfolio, MF, watchlist)
+    premium  / premiumpass   → 12 scopes (+ fundamentals, technicals, macro, risk, sentiment)
+    analyst  / analystpass   → 16 scopes (+ filings, macro:historical, research:generate)
+
+  SWITCH USER:
+    1. open "http://localhost:8090/realms/stocksonar/protocol/openid-connect/logout?redirect_uri=http://localhost:8090"
+    2. rm -f ~/.gemini/mcp-oauth-tokens.json
+    3. /mcp auth stocksonar → new user
+
+  KEY TOOLS TO DEMO:
+    [FREE]     get_stock_quote, add_to_portfolio, get_portfolio_summary
+    [PREMIUM]  portfolio_health_check, check_mf_overlap, check_macro_sensitivity, detect_sentiment_shift
+    [ANALYST]  portfolio_risk_report, what_if_analysis, cross_reference_signals
+
+  KEY RESOURCES:
+    portfolio://{user}/holdings, portfolio://{user}/alerts, portfolio://{user}/risk_score
+    market://overview, macro://snapshot
+
+  KEY PROMPTS:
+    morning_risk_brief, rebalance_suggestions, earnings_exposure
+
+  PERMISSION BOUNDARIES TO SHOW:
+    free  → portfolio_health_check → 403
+    premium → portfolio_risk_report → 403
+    premium → what_if_analysis → 403
+    analyst → everything works
+
+  CURL COMMANDS FOR AUTH DEMO:
+    curl -s -D- http://localhost:8000/mcp 2>&1 | head -5
+    curl -s http://localhost:8000/.well-known/oauth-protected-resource/mcp | python3 -m json.tool
+    curl -s http://localhost:8090/realms/stocksonar/.well-known/openid-configuration | python3 -m json.tool | head -15
+
+  STACK:
+    docker compose up -d --build        # start everything
+    docker compose down                 # stop everything
+    docker compose logs -f mcp-server   # MCP server logs
+
+
+================================================================================
+  RUBRIC CHECKLIST — TICK THESE OFF DURING YOUR DEMO
+================================================================================
+
+  MCP SERVER DESIGN & COMPLIANCE (25%)
+  [ ] Correct tools, resources, prompts with schemas
+  [ ] Streamable HTTP transport
+  [ ] Tier-aware capability negotiation (free sees fewer tools)
+  [ ] Structured JSON responses (source, disclaimer, timestamp, data)
+  [ ] Pagination (price history, news)
+  [ ] Error handling (upstream failures, invalid input)
+  [ ] Caching (TTL per data type)
+
+  AUTHENTICATION & AUTHORISATION (25%)
+  [ ] OAuth 2.1 + PKCE working end-to-end
+  [ ] Protected Resource Metadata (/.well-known/oauth-protected-resource/mcp)
+  [ ] Bearer token validation (JWKS signature, expiry, audience)
+  [ ] 401 with WWW-Authenticate + resource_metadata URL
+  [ ] Tiered access (3 tiers, 16 scopes)
+  [ ] Rate limiting with 429 + Retry-After
+  [ ] Auth server separate from MCP server (Keycloak :8090 vs MCP :8000)
+  [ ] Upstream API key isolation (keys in .env, never in responses)
+
+  CROSS-SOURCE REASONING (25%)
+  [ ] portfolio_risk_report combines 5+ APIs
+  [ ] what_if_analysis cross-references holdings with historical data
+  [ ] cross_reference_signals explicit confirm/contradict
+  [ ] Evidence citations specific (source fields per API)
+  [ ] Cross-source output adds insight beyond individual APIs
+  [ ] Contradictions and confirmations explicitly identified
+
+  SYSTEM DESIGN & TECHNICAL DEPTH (15%)
+  [ ] Caching strategy (Redis, TTL per data type)
+  [ ] Rate limiting (per-user, per-tier, Redis sliding window)
+  [ ] Upstream quota awareness (GNews daily cap)
+  [ ] Token validation implementation
+  [ ] Audit logging (structured JSON per tool call)
+  [ ] Graceful degradation on upstream failures
+
+  DEMO & USABILITY (10%)
+  [ ] Works with MCP client (Gemini CLI)
+  [ ] Demo covers: auth flow → discovery → tools → boundary → tier upgrade
+  [ ] Docker Compose one-command setup
+  [ ] Clear documentation (README + ARCHITECTURE.md + DEMO_GUIDE.md)
+
+
+================================================================================
+  IF THINGS GO WRONG — RECOVERY PLAYBOOK
+================================================================================
+
+  PROBLEM: Keycloak not ready
+  FIX: Wait 30-60s. Check: curl -sf http://localhost:8090/realms/stocksonar/.well-known/openid-configuration
+  BACKUP: Show the curl auth demo while waiting. Keycloak is slow on first boot.
+
+  PROBLEM: Gemini CLI won't connect
+  FIX: rm -f ~/.gemini/mcp-oauth-tokens.json && /mcp auth stocksonar
+  BACKUP: Use the interactive Python script instead:
+    source .venv/bin/activate
+    python scripts/ps2_interactive.py --tier analyst
+
+  PROBLEM: MCP server crashes
+  FIX: docker compose logs -f mcp-server (check error)
+       docker compose up -d --build mcp-server (rebuild)
+
+  PROBLEM: Can't switch users (SSO sticks to old user)
+  FIX: Open incognito browser window. Or:
+    open "http://localhost:8090/realms/stocksonar/protocol/openid-connect/logout?redirect_uri=http://localhost:8090"
+    rm -f ~/.gemini/mcp-oauth-tokens.json
+
+  PROBLEM: yfinance returns no data (market closed / API issue)
+  SAY: "The market is currently closed, so live price data isn't available.
+       Let me show the cached data and the tool's graceful degradation."
+
+  PROBLEM: GNews API quota exhausted
+  SAY: "We've hit the daily free tier limit for GNews. The server tracks
+       this via a Redis counter and returns a clear quota error rather
+       than crashing. That's upstream quota awareness in action."
+
+  PROBLEM: Judge asks about something you didn't show
+  BACKUP FILES:
+    docs/ARCHITECTURE.md — full technical docs with mermaid diagrams
+    docs/DEMO_GUIDE.md — step-by-step with all prompts
+    docs/gemini_test_prompts.md — exhaustive test prompts per tier
+    README.md — setup, API reference, LLM integration
+
+================================================================================
+  END OF PRESENTATION SCRIPT
+================================================================================

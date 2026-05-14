@@ -1,0 +1,118 @@
+================================================================================
+  StockSonar — Deploy on AWS EC2 (single instance, docker compose)
+  You run the AWS console steps; the repo only needs a configured .env + compose.
+================================================================================
+
+PREREQ
+  - Repo already supports public URLs via environment variables (see .env.example).
+  - Do NOT change KEYCLOAK_JWKS_URI in docker-compose.yml — it must stay
+    http://keycloak:8080/... (Docker internal). Only public-facing URLs use your IP/DNS.
+
+
+--------------------------------------------------------------------------------
+PART A — AWS CONSOLE (you do this)
+--------------------------------------------------------------------------------
+
+1) Create a security group (or edit default)
+   Inbound rules:
+     TCP 22   from Your IP          (SSH)
+     TCP 8000 from 0.0.0.0/0       (MCP — tighten for production)
+     TCP 8090 from 0.0.0.0/0       (Keycloak login — tighten for production)
+
+2) Launch EC2
+   - AMI: Amazon Linux 2023 (or Ubuntu 24.04)
+   - Type: t3.medium or larger (Keycloak needs RAM)
+   - Disk: 20 GB gp3 is enough for a demo
+   - Attach the security group above
+   - Key pair: download .pem for SSH
+
+3) Note the instance PUBLIC IPv4 (or Elastic IP if you attach one). Call it HOST below.
+
+
+--------------------------------------------------------------------------------
+PART B — ON THE EC2 INSTANCE (SSH)
+--------------------------------------------------------------------------------
+
+4) Install Docker + Compose plugin (Amazon Linux 2023 example)
+
+   sudo dnf update -y
+   sudo dnf install -y docker git
+   sudo systemctl start docker && sudo systemctl enable docker
+   sudo usermod -aG docker ec2-user
+   sudo mkdir -p /usr/local/lib/docker/cli-plugins
+   sudo curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m) -o /usr/local/lib/docker/cli-plugins/docker-compose
+   sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+   Log out and SSH back in so the docker group applies.
+
+5) Clone and enter the repo
+
+   git clone <YOUR_REPO_URL> StockSonar
+   cd StockSonar
+
+6) Create .env from example and set keys + PUBLIC URLs
+
+   cp .env.example .env
+   nano .env
+
+   Required for the app:
+     GNEWS_API_KEY=...
+
+   Required for remote host (replace 1.2.3.4 with your HOST from step 3):
+
+     MCP_BASE_URL=http://1.2.3.4:8000
+     KEYCLOAK_PUBLIC_URL=http://1.2.3.4:8090
+     KEYCLOAK_ISSUER=http://1.2.3.4:8090/realms/stocksonar
+     KEYCLOAK_AUTHORIZATION_SERVER=http://1.2.3.4:8090/realms/stocksonar
+
+   Leave REDIS_URL as in .env.example for local scripts; docker-compose overrides
+   the MCP container to redis://redis:6379/0 automatically.
+
+   Note: KEYCLOAK_JWKS_URI in .env is overridden inside the container by compose to
+   http://keycloak:8080/realms/stocksonar/protocol/openid-connect/certs — that is correct.
+
+7) First-time Keycloak import: if you ever ran compose locally with the same realm volume
+   name, ignore. On a fresh EC2, run:
+
+   docker compose up -d --build
+
+   Wait 45–90 seconds, then from the instance:
+
+   curl -sf http://localhost:8000/health
+   curl -sf http://localhost:8090/realms/stocksonar/.well-known/openid-configuration | head
+
+8) From your laptop (optional sanity check)
+
+   curl -s http://HOST:8000/health
+   curl -s http://HOST:8000/.well-known/oauth-protected-resource/mcp | head
+
+9) Point your MCP client (e.g. Gemini CLI) at the public MCP URL
+
+   In ~/.gemini/settings.json or project .gemini/settings.json:
+
+     "httpUrl": "http://HOST:8000/mcp"
+
+   OAuth browser flow will open http://HOST:8090 for Keycloak.
+
+
+--------------------------------------------------------------------------------
+PART C — TEARDOWN
+--------------------------------------------------------------------------------
+
+   cd StockSonar
+   docker compose down -v
+   Terminate the EC2 instance in the console when done (stops charges).
+
+
+--------------------------------------------------------------------------------
+TROUBLESHOOTING
+--------------------------------------------------------------------------------
+
+- Issuer mismatch / invalid_token: MCP_BASE_URL, KEYCLOAK_ISSUER, KEYCLOAK_AUTHORIZATION_SERVER,
+  and KEYCLOAK_PUBLIC_URL must all use the same host the browser uses (no http vs https mix-up).
+
+- Keycloak slow first boot: wait, then check  docker compose logs -f keycloak
+
+- Cannot switch users in browser: use incognito or Keycloak logout URL with your HOST:8090
+
+================================================================================

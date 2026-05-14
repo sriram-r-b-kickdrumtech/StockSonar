@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "stocksonar": {
+      "httpUrl": "http://localhost:8000/mcp",
+      "trust": true,
+      "timeout": 60000,
+      "oauth": {
+        "clientId": "stocksonar-mcp",
+        "scopes": ["openid", "profile", "email"]
+      }
+    }
+  }
+}

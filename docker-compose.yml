@@ -11,8 +11,8 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
       KC_HTTP_ENABLED: "true"
       KC_HOSTNAME_STRICT: "false"
-      # Host port 8090 (avoid clashing with other apps on 8080). Issuer URLs use this port.
-      KC_HOSTNAME: http://localhost:8090
+      # Public URL clients use (localhost for dev; set KEYCLOAK_PUBLIC_URL on EC2 — see .env.example)
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8090}
     ports:
       - "8090:8080"
     volumes:
@@ -31,10 +31,11 @@ services:
     # Overrides .env for in-network Docker URLs (env wins over env_file).
     environment:
       REDIS_URL: redis://redis:6379/0
-      MCP_BASE_URL: http://localhost:8000
+      # Public URLs in JWT / OAuth metadata (localhost for dev; override via .env on EC2)
+      MCP_BASE_URL: ${MCP_BASE_URL:-http://localhost:8000}
       KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/stocksonar/protocol/openid-connect/certs
-      KEYCLOAK_ISSUER: http://localhost:8090/realms/stocksonar
-      KEYCLOAK_AUTHORIZATION_SERVER: http://localhost:8090/realms/stocksonar
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-http://localhost:8090/realms/stocksonar}
+      KEYCLOAK_AUTHORIZATION_SERVER: ${KEYCLOAK_AUTHORIZATION_SERVER:-http://localhost:8090/realms/stocksonar}
     depends_on:
       - redis
       - keycloak
