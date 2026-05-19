@@ -39,6 +39,8 @@ docker compose up -d --build
 
 The MCP container reads `.env` if present (optional). After **first** start, wait ~30–60s for Keycloak to import the realm.
 
+**HTTPS on EC2 (DuckDNS):** see [`docs/DEPLOY_HTTPS_DDNS.md`](docs/DEPLOY_HTTPS_DDNS.md) — `docker compose -f docker-compose.yml -f deploy/docker-compose.https.yml up -d --build`
+
 ### Fresh Keycloak volume (401 / missing `aud`)
 
 If tokens fail JWT validation, reset volumes and re-import:
@@ -206,11 +208,88 @@ PYTHONPATH=src pytest tests -m "not integration" -q
 
 ---
 
-## Using StockSonar with LLMs (Gemini CLI / Cursor / Claude Code)
+## Using StockSonar with LLMs
 
-StockSonar is a standard MCP server — any MCP-compatible LLM client can connect and use all tools, resources, and prompts.
+StockSonar is a standard MCP server — any MCP-compatible client can connect and use tools, resources, and prompts.
 
-### Quick start (static tokens — no Keycloak login needed)
+**Deployed demo (HTTPS + Keycloak OAuth):** `https://jarvis-kd.duckdns.org/mcp`  
+Full client setup: [`demo-remote/README.md`](demo-remote/README.md) · Deploy guide: [`docs/DEPLOY_HTTPS_DDNS.md`](docs/DEPLOY_HTTPS_DDNS.md)
+
+| Client | What to copy / edit |
+|--------|---------------------|
+| **Gemini CLI** | [`demo-remote/gemini.settings.example.json`](demo-remote/gemini.settings.example.json) → `.gemini/settings.json` |
+| **Claude Code** | [`demo-remote/claude.mcp.example.json`](demo-remote/claude.mcp.example.json) → `.mcp.json` |
+| **Claude Desktop** | [`demo-remote/claude_desktop_config.snippet.json`](demo-remote/claude_desktop_config.snippet.json) → `~/Library/Application Support/Claude/claude_desktop_config.json` |
+
+Test users: `free` / `freepass`, `premium` / `premiumpass`, `analyst` / `analystpass` (tier from Keycloak realm roles).
+
+---
+
+### Deployed server — Gemini CLI
+
+From the repo root:
+
+```bash
+mkdir -p .gemini
+cp demo-remote/gemini.settings.example.json .gemini/settings.json
+gemini
+```
+
+Authenticate (command order matters):
+
+```text
+/mcp auth stocksonar
+```
+
+Browser opens Keycloak at `https://jarvis-kd.duckdns.org`. Confirm with `/mcp` → `stocksonar (CONNECTED)`.
+
+Switch user later: ask Gemini to use **`logout_switch_user`**, or `rm -f ~/.gemini/mcp-oauth-tokens.json` and run `/mcp auth stocksonar` again.
+
+---
+
+### Deployed server — Claude Code
+
+```bash
+cp demo-remote/claude.mcp.example.json .mcp.json
+```
+
+Restart Claude Code. Complete the OAuth browser flow when prompted (`https://jarvis-kd.duckdns.org`).
+
+---
+
+### Deployed server — Claude Desktop
+
+Claude Desktop uses **stdio**; bridge with **`mcp-remote`** (Node 18+ required).
+
+1. Merge [`demo-remote/claude_desktop_config.snippet.json`](demo-remote/claude_desktop_config.snippet.json) into:
+
+   `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+2. Set the two `@/Users/.../demo-remote/oauth_*.json` paths to your **absolute** repo path.
+
+3. Clear cached tokens and restart:
+
+   ```bash
+   rm -rf ~/.mcp-auth
+   ```
+
+   Quit Claude (**Cmd+Q**), reopen → **Settings → Developer → MCP** → enable **stocksonar**.
+
+4. Log in via browser when prompted (e.g. `analyst` / `analystpass`).
+
+**Step-by-step:** [`demo-remote/CLAUDE_DESKTOP_SETUP.md`](demo-remote/CLAUDE_DESKTOP_SETUP.md)
+
+**Log out / switch tier from Claude chat:**
+
+```text
+Use StockSonar logout_switch_user — I want to sign in as free.
+```
+
+Or run on Mac: `./demo-remote/logout-stocksonar.sh` (then restart Claude and toggle MCP).
+
+---
+
+### Local dev — static tokens (no Keycloak browser flow)
 
 Switch the server to **static-token mode** so the LLM client can authenticate with a simple bearer token header instead of an OAuth browser flow:
 
@@ -228,9 +307,9 @@ This reads `.env.llm` which sets `AUTH_MODE=static` and defines three tokens:
 | `premium-token` | Premium | Risk tools only |
 | `free-token` | Free | Basic portfolio + market |
 
-### Gemini CLI (free, recommended)
+### Local dev — Gemini CLI (static tokens)
 
-The repo includes `.gemini/settings.json` pre-configured for StockSonar.
+Point Gemini at localhost with a bearer token (after starting the stack in static mode below).
 
 **1. Install Gemini CLI** (if not already):
 
@@ -285,9 +364,9 @@ gemini mcp add --transport http stocksonar http://localhost:8000/mcp \
 2. Go to **Settings → MCP** and verify `stocksonar` shows as connected (green dot)
 3. In Agent mode, ask Cursor to use StockSonar tools
 
-### Claude Code / Claude Desktop
+### Local dev — Claude Code / Claude Desktop (static tokens)
 
-The repo includes `.mcp.json` at the root for Claude Code. Edit it to add the static token header:
+Edit `.mcp.json` or Claude Desktop config for localhost + bearer token:
 
 ```json
 {
