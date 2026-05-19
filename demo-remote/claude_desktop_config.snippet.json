@@ -12,9 +12,9 @@
         "--auth-timeout",
         "120",
         "--static-oauth-client-info",
-        "@/ABSOLUTE/PATH/TO/StockSonar/demo-remote/oauth_client_info.json",
+        "@/Users/sriram/GenAIHackathon/StockSonar/demo-remote/oauth_client_info.json",
         "--static-oauth-client-metadata",
-        "@/ABSOLUTE/PATH/TO/StockSonar/demo-remote/oauth_client_metadata.json"
+        "@/Users/sriram/GenAIHackathon/StockSonar/demo-remote/oauth_client_metadata.json"
       ]
     }
   }

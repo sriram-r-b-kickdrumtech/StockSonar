@@ -18,6 +18,7 @@ from stocksonar.tools.risk import register_risk_tools
 from stocksonar.tools.technicals_tools import register_technicals_tools
 from stocksonar.tools.watchlist_tools import register_watchlist_tools
 from stocksonar.tools.aliases_ps2 import register_ps2_alias_tools
+from stocksonar.tools.auth_tools import register_auth_tools
 
 
 def register_all_tools(mcp) -> None:
@@ -36,4 +37,5 @@ def register_all_tools(mcp) -> None:
     register_market_macro_resources(mcp)
     register_watchlist_resources(mcp)
     register_ps2_alias_tools(mcp)
+    register_auth_tools(mcp)
     register_ps2_prompts(mcp)

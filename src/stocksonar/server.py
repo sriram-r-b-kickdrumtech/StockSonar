@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 import redis.asyncio as redis
 from starlette.middleware import Middleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from fastmcp import FastMCP
 
@@ -57,7 +57,9 @@ def create_app() -> FastMCP:
         "StockSonar",
         instructions=(
             "Indian financial intelligence MCP: market data, mutual funds, news, "
-            "and PS2 portfolio risk tools. All outputs are JSON facts with sources — not advice."
+            "and PS2 portfolio risk tools. All outputs are JSON facts with sources — not advice. "
+            "When the user wants to log out or switch Keycloak tier (free/premium/analyst), "
+            "call the logout_switch_user tool and follow its steps."
         ),
         auth=auth,
         lifespan=lifespan,
@@ -73,6 +75,28 @@ def create_app() -> FastMCP:
                 "redis_url_configured": bool(settings.redis_url),
             }
         )
+
+    @mcp.custom_route("/auth/logout", methods=["GET"])
+    async def auth_logout_help(request: Request) -> HTMLResponse | RedirectResponse:
+        """Browser helper: ?go=1 redirects to Keycloak logout."""
+        from stocksonar.tools.auth_tools import _logout_url
+
+        logout = _logout_url()
+        if request.query_params.get("go") == "1":
+            return RedirectResponse(logout, status_code=302)
+        html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>StockSonar logout</title></head>
+<body style="font-family:system-ui;max-width:40rem;margin:2rem auto;padding:0 1rem">
+<h1>Switch StockSonar user</h1>
+<ol>
+<li><a href="{logout}">Log out of Keycloak</a> (or <a href="/auth/logout?go=1">redirect</a>)</li>
+<li>On your Mac: <code>rm -rf ~/.mcp-auth</code></li>
+<li>Quit Claude (Cmd+Q), reopen → Developer → MCP → toggle <strong>stocksonar</strong></li>
+<li>Reconnect and sign in as another user (<code>free</code>, <code>premium</code>, <code>analyst</code>)</li>
+</ol>
+<p>In Claude chat you can also say: <em>Use StockSonar logout_switch_user</em></p>
+</body></html>"""
+        return HTMLResponse(html)
 
     return mcp
 

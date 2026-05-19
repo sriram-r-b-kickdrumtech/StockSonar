@@ -1,0 +1,40 @@
+# Overlay: HTTPS on jarvis-kd.duckdns.org via Caddy (ports 80 + 443).
+# Local dev unchanged: use plain `docker compose up` without this file.
+#
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.https.yml up -d --build
+#
+# Set in .env (same hostname, HTTPS, no port suffix):
+#   MCP_BASE_URL=https://jarvis-kd.duckdns.org
+#   KEYCLOAK_PUBLIC_URL=https://jarvis-kd.duckdns.org
+#   KEYCLOAK_ISSUER=https://jarvis-kd.duckdns.org/realms/stocksonar
+#   KEYCLOAK_AUTHORIZATION_SERVER=https://jarvis-kd.duckdns.org/realms/stocksonar
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Path is relative to project dir (repo root), not this file's folder
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - mcp-server
+      - keycloak
+
+  keycloak:
+    ports: !reset []
+    environment:
+      KC_PROXY_HEADERS: xforwarded
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-https://jarvis-kd.duckdns.org}
+      KC_HOSTNAME_STRICT: "true"
+
+  mcp-server:
+    ports: !reset []
+
+volumes:
+  caddy_data:
+  caddy_config:

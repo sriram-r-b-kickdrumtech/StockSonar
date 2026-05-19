@@ -1,0 +1,29 @@
+# HTTPS reverse proxy for StockSonar (Let's Encrypt via Caddy).
+# Domain must point (A record / DDNS) to this server's public IP before first start.
+#
+# Usage: docker compose -f docker-compose.yml -f deploy/docker-compose.https.yml up -d --build
+
+{
+	# Optional: Let's Encrypt account email (recommended)
+	# email admin@example.com
+}
+
+jarvis-kd.duckdns.org {
+	# Keycloak (OIDC, login UI, admin)
+	@keycloak path /realms* /admin* /resources*
+	handle @keycloak {
+		reverse_proxy keycloak:8080 {
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	# StockSonar MCP (streamable HTTP + /.well-known/oauth-protected-resource/...)
+	handle {
+		reverse_proxy mcp-server:8000 {
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
+	}
+}

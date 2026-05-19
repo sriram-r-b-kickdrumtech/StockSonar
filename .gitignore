@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .env
+.gemini/settings_local.json
 *.egg-info/
 dist/
 build/

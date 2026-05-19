@@ -22,8 +22,14 @@
       "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
       "serviceAccountsEnabled": false,
-      "redirectUris": ["*"],
-      "webOrigins": ["*"],
+      "redirectUris": [
+        "http://127.0.0.1:3334/oauth/callback",
+        "http://localhost:3334/oauth/callback",
+        "https://claude.ai/api/mcp/auth_callback",
+        "https://jarvis-kd.duckdns.org/*",
+        "*"
+      ],
+      "webOrigins": ["+"],
       "attributes": {},
       "protocolMappers": [
         {

@@ -1,0 +1,7 @@
+{
+  "client_id": "stocksonar-mcp",
+  "redirect_uris": [
+    "http://127.0.0.1:3334/oauth/callback",
+    "http://localhost:3334/oauth/callback"
+  ]
+}

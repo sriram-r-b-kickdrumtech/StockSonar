@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "stocksonar": {
-      "httpUrl": "http://localhost:8000/mcp",
+      "httpUrl": "https://jarvis-kd.duckdns.org/mcp",
       "trust": true,
       "timeout": 60000,
       "oauth": {
